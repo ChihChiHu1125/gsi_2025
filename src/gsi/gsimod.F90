@@ -77,6 +77,10 @@
   use radinfo, only: crtm_coeffs_path,optconv,hydrotable_format,hydrotype, &
                      allsky_verbose,cloud_mask_option,mask_threshold
 
+! CCH::
+  use radinfo, only: varbc_data_control, cld_cld_varbc_constraint, use_bc_clw_for_cloud_mismatch,&
+                     empirical_inflation
+
   use ozinfo, only: diag_ozone,init_oz
   use aeroinfo, only: diag_aero, init_aero, init_aero_vars, final_aero_vars
   use coinfo, only: diag_co,init_co
@@ -771,6 +775,9 @@
 !     NOTE:  for now, if in regional mode, then iguess=-1 is forced internally.
 !            add use of guess file later for regional mode.
 
+
+! CCH:: also modify the namelist for GSI
+
   namelist/setup/gencode,factqmin,factqmax,superfact,limitqobs,clip_supersaturation, &
        factql,factqi,factqr,factqs,factqg, &     
        factv,factl,factp,factg,factw10m,facthowv,factcldch,R_option,deltim,dtphys,&
@@ -815,7 +822,9 @@
        cao_check,lcalc_gfdl_cfrac,tau_fcst,efsoi_order,lupdqc,lqcoef,cnvw_option,l2rwthin,hurricane_radar,&
        l_reg_update_hydro_delz, l_obsprvdiag,&
        l_use_dbz_directDA, l_use_rw_columntilt, ta2tb, optconv, &
-       r_hgt_fed
+       r_hgt_fed, &
+       varbc_data_control, cld_cld_varbc_constraint, use_bc_clw_for_cloud_mismatch, &
+       empirical_inflation
 
 ! GRIDOPTS (grid setup variables,including regional specific variables):
 !     jcap     - spectral resolution

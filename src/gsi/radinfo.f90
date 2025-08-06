@@ -125,6 +125,13 @@ module radinfo
   public :: lupdqc, lqcoef
   public :: optconv
 
+  ! CCH::
+  ! VarBC data control related variables:
+  public :: varbc_data_control, cld_cld_varbc_constraint, use_bc_clw_for_cloud_mismatch
+
+  ! empirical inflation:
+  public :: empirical_inflation
+
   integer(i_kind),parameter:: numt = 33   ! size of AVHRR bias correction file
   integer(i_kind),parameter:: ntlapthresh = 100 ! threshhold value of cycles if tlapmean update is needed
 
@@ -250,6 +257,16 @@ module radinfo
 
   integer(i_kind),allocatable, dimension(:):: iextra_det
 
+  ! CCH::
+  ! VarBC data control related variables:
+  logical :: use_bc_clw_for_cloud_mismatch    ! whether to use bias-corrected TB to calculate CLW used for data control
+  character(len=100):: varbc_data_control     ! data control strategy
+  real(r_kind) :: cld_cld_varbc_constraint    ! data control strategy parameter for clr_clr_and_cld_cld
+
+  ! empirical inflation:
+  logical :: empirical_inflation              ! whether to use empirical inflation (Zhu et al 2016) for all-sky AMSUA/ATMS channels
+
+
   character(len=*),parameter :: myname='radinfo'
 contains
 
@@ -336,6 +353,31 @@ contains
 
     cld_det_dec2bin = .false.  ! converts cld_det from decimal to binary
     optconv = zero
+
+    ! CCH::
+
+    ! VarBC data control related variables:
+    varbc_data_control = 'default'           ! a new handle to separate the SDOEI and varbc data control, which was 
+                                             ! originally controlled by cld_rbc_idx
+                                             ! This new test add a new handle cld_rbc_idx_varbc
+                                             !
+                                             ! default  = using the original VarBC as in Zhu 2016 
+                                             !            (i.e., cld_rbc_idx_varbc is not doing anything)
+                                             ! only_clr_clr = a very restrictive approach (least amount of data goes into VarBC). 
+                                             !                Only use obs=clear, model=clear observations in VarBC
+                                             ! clr_clr_and_cld_cld = a slightly more restrictive approach than default.
+                                             !                       Use obs=clear,  model=clear and 
+                                             !                           obs=cloudy, model=cloudy with |obs-model|<=cld_cld_varbc_constraint
+                                             ! clr_clr_and_cld_cld_low = use "clr_clr_and_cld_cld" approach only for lower tropospheric sensitive channels 
+                                             !                           use "default" for the other all-sky channels
+   use_bc_clw_for_cloud_mismatch = .true.    ! whether using bias corrected TB to define the model CLW for VarBC data control
+   cld_cld_varbc_constraint = 0.05_r_kind    ! definition for "cloudy-consistent" data for varbc (see varbc_data_control)
+
+   ! empirical inflation:
+   empirical_inflation = .true.              ! whether to use the empirical inflation from Zhu et al. (2016)
+
+
+
   end subroutine init_rad
 
 

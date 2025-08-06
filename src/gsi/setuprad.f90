@@ -247,6 +247,9 @@ contains
       air_rad,ang_rad,adp_anglebc,angord,ssmis_precond,emiss_bc,upd_pred, &
       passive_bc,ostats,rstats,newpc4pred,radjacnames,radjacindxs,nsigradjac,nvarjac, &
       varch_sea,varch_land,varch_ice,varch_snow,varch_mixed,allsky_verbose
+! CCH::
+  use radinfo, only: use_bc_clw_for_cloud_mismatch
+
   use gsi_nstcouplermod, only: nstinfo
   use read_diag, only: get_radiag,ireal_radiag,ipchan_radiag
   use guess_grids, only: sfcmod_gfs,sfcmod_mm5,comp_fact10
@@ -390,13 +393,17 @@ contains
   real(r_kind),dimension(npred,nchanl):: pred,predchan
   real(r_kind),dimension(nchanl):: err2,tbc0,tb_obs0,raterr2,wgtjo
   real(r_kind),dimension(nchanl):: varinv0,diagadd
-  real(r_kind),dimension(nchanl):: varinv,varinv_use,error0,errf,errf0
+  real(r_kind),dimension(nchanl):: varinv,varinv_use,errf,errf0
+
+  ! CCH::
+  real(r_kind),dimension(nchanl):: error0, error_sym_cld
+
   real(r_kind),dimension(nchanl):: tb_obs,tbc,tbcnob,tlapchn,tb_obs_sdv
   real(r_kind),dimension(nchanl):: tnoise,tnoise_cld
   real(r_kind),dimension(nchanl):: emissivity,ts,emissivity_k
   real(r_kind),dimension(nchanl):: tsim,wavenumber,tsim_bc
 !  real(r_kind),dimension(nchanl):: tsim_clr,tsim_clr_bc,cldeff_obs,cldeff_sim 
-  real(r_kind),dimension(nchanl):: tsim_clr,tsim_clr_bc,cldeff_obs,cldeff_fg
+  real(r_kind),dimension(nchanl):: tsim_clr,tsim_clr_bc,cldeff_obs,cldeff_fg, cldeff_obs_bc
   real(r_kind),dimension(nsig,nchanl):: wmix,temp,ptau5
   real(r_kind),dimension(nsigradjac,nchanl):: jacobian
   real(r_kind),dimension(nreal+nchanl,nobs)::data_s
@@ -405,10 +412,21 @@ contains
   real(r_kind),dimension(nsig+1):: prsitmp
   real(r_kind),dimension(nchanl):: chan_level
   real(r_kind),dimension(nchanl):: weightmax
+
+  ! CCH::
+  ! add new handle to separate the effect of 
+  ! (1) SDOEI: i.e., when cld_rbc_idx = 0, add Situation-Dependent Observation Erorr Inflation (see qc_amsua for detail)
+  ! (2) varbc: whether the obs goes into varbc for minimization or not
+  ! cld_rbc_idx      : control for the SDOEI
+  ! cld_rbc_idx2     : (used for GMI, not for this test)
+  ! cld_rbc_idx_varbc: control for whether the obs goes into varbc 
+
   real(r_kind),dimension(nchanl):: cld_rbc_idx,cld_rbc_idx2
+  real(r_kind),dimension(nchanl):: cld_rbc_idx_varbc
+
   real(r_kind),dimension(nchanl):: tcc         
   real(r_kind) :: ptau5deriv, ptau5derivmax
-  real(r_kind) :: clw_guess,clw_guess_retrieval,ciw_guess,clw_avg
+  real(r_kind) :: clw_guess,clw_guess_retrieval,clw_guess_retrieval_nobc,ciw_guess,clw_avg,clw_model
   real(r_kind) :: rain_guess,snow_guess,graupel_guess
   real(r_kind),dimension(:), allocatable :: rsqrtinv
   real(r_kind),dimension(:), allocatable :: rinvdiag
@@ -1261,10 +1279,12 @@ contains
            tbc(i)=tbc(i) - predbias(npred+1,i)
            tbc(i)=tbc(i) - predbias(npred+2,i)
 
+! CCH:
 !          Calculate cloud effect for QC
+
            if (radmod%cld_effect .and. eff_area) then
-              cldeff_obs(i) = tb_obs(i)-tsim_clr(i)    ! observed cloud delta (no bias correction)                
-              cldeff_fg(i) = tsim(i)-tsim_clr(i)      ! simulated cloud delta
+              cldeff_obs(i) = tb_obs(i)- tsim_clr(i)    ! observed cloud delta (no bias correction)                
+              cldeff_fg(i)  = tsim(i)  - tsim_clr(i)    ! simulated cloud delta (no bias correction)
               ! need to apply bias correction ? need to think about this
               bias = zero
               do j=1, npred-angord
@@ -1272,7 +1292,8 @@ contains
               end do
               bias = bias+predbias(npred+1,i)
               bias = bias+predbias(npred+2,i)
-              cldeff_obs(i)=cldeff_obs(i) - bias       ! observed cloud delta (bias corrected)                
+              cldeff_obs_bc(i)=cldeff_obs(i) - bias      ! observed cloud delta (bias corrected)                
+              !cldeff_obs(i)=cldeff_obs(i) - bias       ! observed cloud delta (bias corrected)                
            endif
         end do
 
@@ -1298,10 +1319,14 @@ contains
            end do
         end if
 
+! CCH::
 !       Compute retrieved microwave cloud liquid water and 
-!       assign cld_rbc_idx for bias correction in allsky conditions
+!       assign (1) cld_rbc_idx          for SDOEI
+!              (2) cld_rbc_idx_varbc    for bias correction in allsky conditions
         cld_rbc_idx=one
         cld_rbc_idx2=zero
+        cld_rbc_idx_varbc=one ! initialization of VarBC data control variable
+
         if (radmod%lcloud_fwd .and. radmod%ex_biascor .and. eff_area) then
            ierrret=0
 !$omp parallel do  schedule(dynamic,1) private(i,mm,j)
@@ -1321,14 +1346,41 @@ contains
            end do
 
            if(amsua.or.atms) then
-              call ret_amsua(tsim_bc,nchanl,tsavg5,zasat,clw_guess_retrieval,ierrret)
+              ! CCH::
+              ! also record the retrieved model CLW without bias correction
+              ! i.e., CLW (using BC TBs):   clw_guess_retrieval
+              !       CLW (using NOBC TBs): clw_guess_retrieval_nobc
+
+              call ret_amsua(tsim_bc,nchanl,tsavg5,zasat,clw_guess_retrieval,     ierrret)
+              call ret_amsua(tsim   ,nchanl,tsavg5,zasat,clw_guess_retrieval_nobc,ierrret)
+
            else if(gmi) then
               call gmi_37pol_diff(tsim(6),tsim(7),tsim_clr(6),tsim_clr(7),clw_guess_retrieval,ierrret)
               call gmi_37pol_diff(tb_obs(6),tb_obs(7),tsim_clr(6),tsim_clr(7),clw_obs,ierrret)
            end if
+
            if (radmod%ex_obserr=='ex_obserr1') then
-              call radiance_ex_biascor(radmod,nchanl,tsim_bc,tsavg5,zasat, &
-                       clw_guess_retrieval,clw_obs,cld_rbc_idx,ierrret)
+
+              ! CCH:: 
+              ! the major function of radiance_ex_biascor is to determine cld_rbc_idx & cld_rbc_idx_varbc
+              ! note that arguments of this function have been modified:
+ 
+              ! original:
+              !call radiance_ex_biascor(radmod,nchanl,tsim_bc,tsavg5,zasat, &
+              !                         clw_guess_retrieval,clw_obs,cld_rbc_idx,ierrret)
+
+              ! determine whether to use CLW(TB w/ BC) or CLW(TB w/o BC) to determine VarBC data control
+              if (use_bc_clw_for_cloud_mismatch) then
+                 call ret_amsua(tsim_bc,nchanl,tsavg5,zasat,clw_guess_retrieval,     ierrret)
+                 clw_model = clw_guess_retrieval ! use bias corrected TB for CLW
+              else
+                 call ret_amsua(tsim,   nchanl,tsavg5,zasat,clw_guess_retrieval_nobc,ierrret)
+                 clw_model = clw_guess_retrieval_nobc
+              endif
+
+              call radiance_ex_biascor(radmod,nchanl,clw_model,clw_obs, &
+                                       cld_rbc_idx,cld_rbc_idx_varbc,ierrret)
+
 !          else if (radmod%ex_obserr=='ex_obserr2') then     ! comment out for now, need to be tested
 !             call radiance_ex_biascor(radmod,nchanl,cldeff_obs,cldeff_fg,cld_rbc_idx)
 !          end if
@@ -1383,6 +1435,11 @@ contains
            error0(i) = tnoise(i)
            errf0(i) = error0(i)
         end do
+
+        ! CCH::  error_sym_cld: a copy of the original error (for sensors/obs that do not enter the following block)
+        !        for sensors that utilize "non-Gaussian error", error0 will be replaced by the NG error table
+        error_sym_cld = error0
+
 
 !       Assign observation error for all-sky radiances 
         if (radmod%lcloud_fwd .and. eff_area)  then
@@ -1458,9 +1515,10 @@ contains
               tb_obsbc1=tb_obs(1)-cbias(nadir,ich(1))
            end if
 
+           ! CCH: variable name change :: cldeff_obs -> cldeff_obs_bc
            call qc_amsua(nchanl,is,ndat,nsig,npred,sea,land,ice,snow,mixed,luse(n),   &
               zsges,cenlat,tb_obsbc1,cosza,clw_obs,tbc,ptau5,emissivity_k,ts, &                   
-              pred,predchan,id_qc,aivals,errf,errf0,clw_obs,varinv,cldeff_obs,cldeff_fg,factch6, & 
+              pred,predchan,id_qc,aivals,errf,errf0,clw_obs,varinv,cldeff_obs_bc,cldeff_fg,factch6, & 
               cld_rbc_idx,sfc_speed,error0,clw_guess_retrieval,scatp,radmod)                    
 
 !  If cloud impacted channels not used turn off predictor
@@ -1499,9 +1557,10 @@ contains
            si_fg  = (tsim(16)-tsim(17)) - (tsim_clr(16)-tsim_clr(17)) 
 !          si_mean= half*(si_obs+si_fg) 
 
+           ! CCH: variable name change :: cldeff_obs -> cldeff_obs_bc
            call qc_atms(nchanl,is,ndat,nsig,npred,sea,land,ice,snow,mixed,luse(n),    &
               zsges,cenlat,tb_obsbc1,cosza,clw_obs,tbc,ptau5,emissivity_k,ts, & 
-              pred,predchan,id_qc,aivals,errf,errf0,clw_obs,varinv,cldeff_obs,cldeff_fg,factch6, &
+              pred,predchan,id_qc,aivals,errf,errf0,clw_obs,varinv,cldeff_obs_bc,cldeff_fg,factch6, &
               cld_rbc_idx,sfc_speed,error0,clw_guess_retrieval,scatp,radmod)                   
 
 !  ---------- GOES imager --------------
@@ -1898,8 +1957,12 @@ contains
 
               m = ich(i)
               if(luse(n))then
-                 drad    = tbc0(i)*cld_rbc_idx(i)
-                 dradnob = tbcnob(i)*cld_rbc_idx(i)
+                 ! CCH:: modify accordingly
+                 !       although I'm not sure why do we need this?
+                 !drad    = tbc0(i)*cld_rbc_idx(i)
+                 !dradnob = tbcnob(i)*cld_rbc_idx(i)
+                 drad    = tbc0(i)*cld_rbc_idx_varbc(i)
+                 dradnob = tbcnob(i)*cld_rbc_idx_varbc(i)
                  varrad  = tbc(i)*varinv(i)
                  stats(1,m)  = stats(1,m) + one              !number of obs
                  stats(3,m)  = stats(3,m) + drad             !obs-mod(w_biascor)
@@ -1939,7 +2002,8 @@ contains
 
 !                   summation of observation number
                     if (newpc4pred) then
-                       ostats(m)  = ostats(m) + cld_rbc_idx(i)
+                       !ostats(m)  = ostats(m) + cld_rbc_idx(i)
+                       ostats(m)  = ostats(m) + cld_rbc_idx_varbc(i)
                     end if
                  end if
 
@@ -1954,7 +2018,8 @@ contains
 !                summation of observation number,
 !                skip ostats accumulation for channels without coef. initialization 
                  if (newpc4pred .and. luse(n) .and. any(predx(:,m)/=zero)) then
-                    ostats(m)  = ostats(m) + cld_rbc_idx(i)
+                    !ostats(m)  = ostats(m) + cld_rbc_idx(i)
+                    ostats(m)  = ostats(m) + cld_rbc_idx_varbc(i)
                  end if
                  iccm=iccm+1
               end if
@@ -2022,7 +2087,12 @@ contains
                     my_head%icx(iii)= m                         ! channel index
 
                     do k=1,npred
-                       my_head%pred(k,iii)=pred(k,ii)*max(cld_rbc_idx(ii),cld_rbc_idx2(ii))*upd_pred(k)
+                       ! CCH::
+                       ! is "upd_pred" never actually used (it is now always set to 1 in radinfo)
+
+                       !my_head%pred(k,iii)=pred(k,ii)*max(cld_rbc_idx(ii),cld_rbc_idx2(ii))*upd_pred(k)
+                       my_head%pred(k,iii)=pred(k,ii)*cld_rbc_idx_varbc(ii)*upd_pred(k)
+
                     end do
 
                     do k=1,nsigradjac
@@ -2192,7 +2262,10 @@ contains
                    
                     my_headm%iccerr(iii)=ncr                     ! channel index
                     do k=1,npred
-                       my_headm%pred(k,iii)=pred(k,ii)*upd_pred(k)*max(cld_rbc_idx(ii),cld_rbc_idx2(ii))
+                       ! CCH::
+                       !my_headm%pred(k,iii)=pred(k,ii)*upd_pred(k)*max(cld_rbc_idx(ii),cld_rbc_idx2(ii))
+                       my_headm%pred(k,iii)=pred(k,ii)*upd_pred(k)*cld_rbc_idx_varbc(ii)
+
                     end do
 
                     my_headm%ich(iii)=ii
@@ -2705,7 +2778,10 @@ contains
                  call nc_diag_metadata_to_single("Vegetation_Fraction",surface(1)%vegetation_fraction  )
                  call nc_diag_metadata_to_single("Snow_Depth",surface(1)%snow_depth          )
                  call nc_diag_metadata_to_single("tpwc",tpwc_obs                     )
-                 call nc_diag_metadata_to_single("clw_guess_retrieval",clw_guess_retrieval            )
+
+                 ! CCH:: record both CLW (using TBs w/ BC) and CLW (using TBs w/o BC):
+                 call nc_diag_metadata_to_single("clw_guess_retrieval",     clw_guess_retrieval            )
+                 call nc_diag_metadata_to_single("clw_guess_retrieval_nobc",clw_guess_retrieval_nobc       )
 
                  call nc_diag_metadata_to_single("Sfc_Wind_Speed",surface(1)%wind_speed          )
                  call nc_diag_metadata_to_single("Cloud_Frac",cld                            )
@@ -2746,6 +2822,24 @@ contains
                  call nc_diag_metadata_to_single("Obs_Minus_Forecast_adjusted",tbc0(ich_diag(i)   )  )     ! observed - simulated Tb with bias corrrection (K)
                  errinv = sqrt(varinv0(ich_diag(i)))
                  call nc_diag_metadata_to_single("Inverse_Observation_Error",errinv           )
+
+                 ! CCH::
+                 if (radmod%lcloud_fwd) then
+                    ! record both indicator for SDOEI and whether observation is used for VarBC coefficient estimation:
+                    call nc_diag_metadata_to_single("Cloud_Displacement_Index", cld_rbc_idx(ich_diag(i))  )         ! "cloud displacement" from Zhu 2016
+                    call nc_diag_metadata_to_single("VarBC_Data_Control_Index", cld_rbc_idx_varbc(ich_diag(i))  )   ! Index to control the data for VarBC
+
+                    ! record "original" observation errors (before SDOEI)
+                    call nc_diag_metadata_to_single("Sym_Observation_Error",error_sym_cld(ich_diag(i)))  ! symmetric observation error
+                    call nc_diag_metadata_to_single("Non_Gaussian_Error",   error0(ich_diag(i)))         ! non-Gaussian observation error
+                                                                                                         ! only meaningful if using non-Gaussian errors
+                    ! record the cloud effect (w/o any bias correction)
+                    call nc_diag_metadata_to_single("Cloud_Effect_Obs",  cldeff_obs(ich_diag(i))) ! observation cloud effect w/o BC
+                    call nc_diag_metadata_to_single("Cloud_Effect_Model",cldeff_fg(ich_diag(i)))  ! model cloud effect w/o BC
+                    call nc_diag_metadata_to_single("Cloud_Effect_Obs_BC",  cldeff_obs_bc(ich_diag(i))) ! observation cloud effect w BC
+
+                 endif
+
 
                  if (radmod%lcloud_fwd .and. allsky_verbose) then
                     call nc_diag_metadata_to_single("Sym_Observation_Error",error0(ich_diag(i)))  ! symmetric observation error

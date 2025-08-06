@@ -159,6 +159,10 @@ module qcmod
   use radinfo, only: iuse_rad,passive_bc,nuchan
   use radinfo, only: tzr_qc
   use radiance_mod, only: rad_obs_type
+
+! CCH:
+  use radinfo, only: empirical_inflation
+
   implicit none
 
 ! set default to private
@@ -315,12 +319,14 @@ module qcmod
 !  Reject because of surface emissivity/temperature influence in subroutine qc_irsnd                                     
   integer(i_kind),parameter:: ifail_sfcir_qc=53
 
-! QC_AMSUA          
-!  Reject because factch6 > limit in subroutine qc_amsua
+
+! QC_AMSUA
+   ! CCH:  add comments         
+!  Reject because factch6 > limit in subroutine qc_amsua (precipitation screening)
   integer(i_kind),parameter:: ifail_factch6_qc=50
-!  Reject because factch4 > limit in subroutine qc_amsua
+!  Reject because factch4 > limit in subroutine qc_amsua (thick cloud screening)
   integer(i_kind),parameter:: ifail_factch4_qc=51
-!  Reject because sval > limit in subroutine qc_amsua over open water          
+!  Reject because sval > limit in subroutine qc_amsua over open water (???)          
   integer(i_kind),parameter:: ifail_sval_qc=52                         
 !  Reject because factch5 > limit in subroutine qc_amsua over open water      
   integer(i_kind),parameter:: ifail_factch5_qc=53                       
@@ -3659,30 +3665,38 @@ subroutine qc_amsua(nchanl,is,ndat,nsig,npred,sea,land,ice,snow,mixed,luse,   &
      end if
   end do
 
+! CCH:
+! The following block is the situation-dependent obs error inflation (empirical inflation)
+! add new control to test these effects
+
 ! Observation error adjustment for cloudy radiance based on mis-matched cloud, 
 ! diff_clw, scattering index, surface wind speed. The coefficient 13.0 for 
 ! clwtmp may be re-tuned with model physics changes. 
-  eff_area=.false.
-  if (radmod%lcloud_fwd) then
-     eff_area=(radmod%cld_sea_only .and. sea) .or. (.not. radmod%cld_sea_only)
-  end if
-  if (radmod%lcloud_fwd .and. eff_area) then
-     icol=one
-     if (any(cld_rbc_idx==zero)) icol=zero
-     do i=1,nchanl
-        if(varinv(i)>tiny_r_kind .and. (i<=ich536 .or. i>=ich890))  then
-           ework = (1.0_r_kind-icol)*abs(tbc(i))
-           ework = ework+min(0.002_r_kind*sfc_speed**2*error0(i), 0.5_r_kind*error0(i))
-           clwtmp=min(abs(clwp_amsua-clw_guess_retrieval), one)
-           ework = ework+min(13.0_r_kind*clwtmp*error0(i), 3.5_r_kind*error0(i))
-           if (scatp>9.0_r_kind) then
-              ework = ework+min(1.5_r_kind*(scatp-9.0_r_kind)*error0(i), 2.5_r_kind*error0(i))
-           end if
-           ework=ework**2
-           varinv(i)=varinv(i)/(one+varinv(i)*ework)
-        endif
-     end do
-  endif
+
+  if (empirical_inflation) then
+     eff_area=.false.
+     if (radmod%lcloud_fwd) then
+        eff_area=(radmod%cld_sea_only .and. sea) .or. (.not. radmod%cld_sea_only)
+     end if
+     if (radmod%lcloud_fwd .and. eff_area) then
+        icol=one
+        if (any(cld_rbc_idx==zero)) icol=zero
+        do i=1,nchanl
+           if(varinv(i)>tiny_r_kind .and. (i<=ich536 .or. i>=ich890))  then
+              ework = (1.0_r_kind-icol)*abs(tbc(i))
+              ework = ework+min(0.002_r_kind*sfc_speed**2*error0(i), 0.5_r_kind*error0(i))
+              clwtmp=min(abs(clwp_amsua-clw_guess_retrieval), one)
+              ework = ework+min(13.0_r_kind*clwtmp*error0(i), 3.5_r_kind*error0(i))
+              if (scatp>9.0_r_kind) then
+                 ework = ework+min(1.5_r_kind*(scatp-9.0_r_kind)*error0(i), 2.5_r_kind*error0(i))
+              end if
+              ework=ework**2
+              varinv(i)=varinv(i)/(one+varinv(i)*ework)
+           endif
+        end do
+     endif
+  endif ! end empirical inflation 
+
 
   return
 
