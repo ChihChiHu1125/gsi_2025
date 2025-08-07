@@ -161,7 +161,7 @@ module qcmod
   use radiance_mod, only: rad_obs_type
 
 ! CCH:
-  use radinfo, only: empirical_inflation
+  use radinfo, only: io_empirical_inflation
 
   implicit none
 
@@ -3673,7 +3673,7 @@ subroutine qc_amsua(nchanl,is,ndat,nsig,npred,sea,land,ice,snow,mixed,luse,   &
 ! diff_clw, scattering index, surface wind speed. The coefficient 13.0 for 
 ! clwtmp may be re-tuned with model physics changes. 
 
-  if (empirical_inflation) then
+  if (io_empirical_inflation) then
      eff_area=.false.
      if (radmod%lcloud_fwd) then
         eff_area=(radmod%cld_sea_only .and. sea) .or. (.not. radmod%cld_sea_only)

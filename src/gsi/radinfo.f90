@@ -127,10 +127,13 @@ module radinfo
 
   ! CCH::
   ! VarBC data control related variables:
-  public :: varbc_data_control, cld_cld_varbc_constraint, use_bc_clw_for_cloud_mismatch
+  public :: varbc_data_control, cld_cld_varbc_constraint, io_use_bc_clw_for_cloud_mismatch
+
+  ! VarBC cloud predictors:
+  public :: io_cld_pred_in_varbc, cld_varbc_chs, cld_pred_varbc, cld_pred_fn_varbc
 
   ! empirical inflation:
-  public :: empirical_inflation
+  public :: io_empirical_inflation
 
   integer(i_kind),parameter:: numt = 33   ! size of AVHRR bias correction file
   integer(i_kind),parameter:: ntlapthresh = 100 ! threshhold value of cycles if tlapmean update is needed
@@ -259,12 +262,19 @@ module radinfo
 
   ! CCH::
   ! VarBC data control related variables:
-  logical :: use_bc_clw_for_cloud_mismatch    ! whether to use bias-corrected TB to calculate CLW used for data control
+  logical :: io_use_bc_clw_for_cloud_mismatch ! whether to use bias-corrected TB to calculate CLW used for data control
   character(len=100):: varbc_data_control     ! data control strategy
   real(r_kind) :: cld_cld_varbc_constraint    ! data control strategy parameter for clr_clr_and_cld_cld
 
+  ! VarBC cloud predictors:
+  logical :: io_cld_pred_in_varbc             ! whether to include cloud predictors in VarBC
+  ! the following variables only matter if io_cld_pred_in_varbc == .true.
+  character(len=100):: cld_varbc_chs          ! defined the subset of channels that include cloud predictors
+  character(len=100):: cld_pred_varbc         ! symmetric cloud, model cloud, obs cloud
+  character(len=100):: cld_pred_fn_varbc      ! functional form of cloud predictors (polynomial, tent function, etc)
+
   ! empirical inflation:
-  logical :: empirical_inflation              ! whether to use empirical inflation (Zhu et al 2016) for all-sky AMSUA/ATMS channels
+  logical :: io_empirical_inflation           ! whether to use empirical inflation (Zhu et al 2016) for all-sky AMSUA/ATMS channels
 
 
   character(len=*),parameter :: myname='radinfo'
@@ -370,11 +380,24 @@ contains
                                              !                           obs=cloudy, model=cloudy with |obs-model|<=cld_cld_varbc_constraint
                                              ! clr_clr_and_cld_cld_low = use "clr_clr_and_cld_cld" approach only for lower tropospheric sensitive channels 
                                              !                           use "default" for the other all-sky channels
-   use_bc_clw_for_cloud_mismatch = .true.    ! whether using bias corrected TB to define the model CLW for VarBC data control
+   io_use_bc_clw_for_cloud_mismatch = .true. ! whether using bias corrected TB to define the model CLW for VarBC data control
    cld_cld_varbc_constraint = 0.05_r_kind    ! definition for "cloudy-consistent" data for varbc (see varbc_data_control)
 
+   ! VarBC cloud predictors:
+   io_cld_pred_in_varbc = .false.            ! whether to use cloud predictors in VarBC
+   cld_varbc_chs = 'low_peaking'             ! which channels to include cloud predictors
+                                             ! all_sky = all of the AMSU-A/ATMS all-sky channels
+                                             ! low_peaking = low-peaking all-sky AMSU-A/ATMS channels
+   cld_pred_varbc = 'sym_clw_nobc'           ! cloud predictor definitions
+                                             ! sym_clw, sym_clw_nobc = symmetric Cloud Liquid Water (CLW) w/ or w/o BC
+                                             ! model_clw, model_clw_nobc = model CLW w/ or w/o BC
+                                             ! obs_clw = obs CLW
+   cld_pred_fn_varbc = 'tent'                ! functional form for cloud-dependent BC
+                                             ! tent = piecewise tent function
+                                             ! 4th_poly = 4th order polynomial
+
    ! empirical inflation:
-   empirical_inflation = .true.              ! whether to use the empirical inflation from Zhu et al. (2016)
+   io_empirical_inflation = .true.              ! whether to use the empirical inflation from Zhu et al. (2016)
 
 
 
@@ -455,7 +478,22 @@ contains
 !        call set_radiag ('version',30303,ier)
         call set_radiag ('version',40000,ier)
     endif
-    
+
+    ! CCH: add cloud predictor for all-sky AMSUA, ATMS channels
+    if (io_cld_pred_in_varbc) then
+       select case(trim(cld_pred_fn_varbc))
+          case('4th_poly')
+            npred=npred+4
+          case('tent')
+            npred=npred+7
+       end select
+    endif
+
+    ! CCH:
+    if (mype==0) write(6,*) 'CCH: RADINFO: io_cld_pred_in_varbc, cld_pred_fn_varbc, npred = ', &
+                                           io_cld_pred_in_varbc, cld_pred_fn_varbc, npred   
+
+ 
 !   inquire about variables in guess
     mxlvs = 0
     call gsi_metguess_get ( 'dim', ndim, ier )
@@ -715,6 +753,8 @@ contains
 
     integer(i_kind) binary_iextra_det(10)
 
+    character(len=100) :: fmt_abias ! CCH: dynamical format for abias and abias_pc out to fort.207
+
     data lunin / 49 /
 
 !============================================================================
@@ -944,9 +984,26 @@ contains
 
           if (mype==mype_rad) then
              write(iout_rad,*)'RADINFO_READ:  read satbias_pc file'
+
+             ! CCH:
+             ! Also record the (prior) error variance of VarBC coefficients into iout_rad (fort.207)
+             ! which will be combined into gsistat in archive 
+
+             ! dynamically adjust the format 140:
+             write(fmt_abias, '(A,I0,A)') '(I4,1x,a20,', npred, 'f12.6)'
+
              do j=1,jpch_rad
-                if(.not. nfound(j))write(iout_rad,*) 'RADINFO_READ: ***WARNING instrument/channel ',&
+
+                if (nfound(j)) then
+                   !write(iout_rad,140) j,trim(nusis(j)),(varA(n,j),n=1,npred)
+                   write(iout_rad,trim(fmt_abias)) j,trim(nusis(j)),(varA(n,j),n=1,npred)
+                else
+                   write(iout_rad,*) 'RADINFO_READ: ***WARNING instrument/channel ',&
                      nusis(j),nuchan(j),' not found in satbias_pc file - set to zero '
+                endif
+                !if(.not. nfound(j))write(iout_rad,*) 'RADINFO_READ: ***WARNING instrument/channel ',&
+                !     nusis(j),nuchan(j),' not found in satbias_pc file - set to zero '
+
              end do
           end if
        else
@@ -1189,10 +1246,15 @@ contains
        endif
 
        if (mype==mype_rad) then
+
+          ! CCH: dynamically adjust the format 140:
+          write(fmt_abias, '(A,I0,A)') '(I4,1x,a20,', npred, 'f12.6)'
+
           write(iout_rad,*)'RADINFO_READ:  guess air mass bias correction coefficients below'
           do j=1,jpch_rad
              if (nfound(j)) then
-                write(iout_rad,140) j,trim(nusis(j)),(predx(n,j),n=1,npred)
+                write(iout_rad,trim(fmt_abias)) j,trim(nusis(j)),(predx(n,j),n=1,npred)
+                !write(iout_rad,140) j,trim(nusis(j)),(predx(n,j),n=1,npred)
              else
                 write(iout_rad,*) '***WARNING instrument/channel ',&
                 nusis(j),nuchan(j),' not found in satbias_in file - set to zero '

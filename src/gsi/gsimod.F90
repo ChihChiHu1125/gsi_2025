@@ -78,8 +78,9 @@
                      allsky_verbose,cloud_mask_option,mask_threshold
 
 ! CCH::
-  use radinfo, only: varbc_data_control, cld_cld_varbc_constraint, use_bc_clw_for_cloud_mismatch,&
-                     empirical_inflation
+  use radinfo, only: varbc_data_control, cld_cld_varbc_constraint, io_use_bc_clw_for_cloud_mismatch,&
+                     io_cld_pred_in_varbc, cld_varbc_chs, cld_pred_varbc, cld_pred_fn_varbc,&
+                     io_empirical_inflation
 
   use ozinfo, only: diag_ozone,init_oz
   use aeroinfo, only: diag_aero, init_aero, init_aero_vars, final_aero_vars
@@ -823,8 +824,9 @@
        l_reg_update_hydro_delz, l_obsprvdiag,&
        l_use_dbz_directDA, l_use_rw_columntilt, ta2tb, optconv, &
        r_hgt_fed, &
-       varbc_data_control, cld_cld_varbc_constraint, use_bc_clw_for_cloud_mismatch, &
-       empirical_inflation
+       varbc_data_control, cld_cld_varbc_constraint, io_use_bc_clw_for_cloud_mismatch, &
+       io_cld_pred_in_varbc, cld_varbc_chs, cld_pred_varbc, cld_pred_fn_varbc, &
+       io_empirical_inflation
 
 ! GRIDOPTS (grid setup variables,including regional specific variables):
 !     jcap     - spectral resolution

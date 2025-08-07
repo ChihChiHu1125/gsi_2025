@@ -248,7 +248,8 @@ contains
       passive_bc,ostats,rstats,newpc4pred,radjacnames,radjacindxs,nsigradjac,nvarjac, &
       varch_sea,varch_land,varch_ice,varch_snow,varch_mixed,allsky_verbose
 ! CCH::
-  use radinfo, only: use_bc_clw_for_cloud_mismatch
+  use radinfo, only: io_use_bc_clw_for_cloud_mismatch, &
+                     io_cld_pred_in_varbc, cld_varbc_chs, cld_pred_varbc, cld_pred_fn_varbc
 
   use gsi_nstcouplermod, only: nstinfo
   use read_diag, only: get_radiag,ireal_radiag,ipchan_radiag
@@ -423,6 +424,14 @@ contains
 
   real(r_kind),dimension(nchanl):: cld_rbc_idx,cld_rbc_idx2
   real(r_kind),dimension(nchanl):: cld_rbc_idx_varbc
+
+  ! cloud predictors in VarBC
+  integer(i_kind) :: cld_varbc_chs_amsua(6), cld_varbc_chs_atms(13)
+  real(r_kind)    :: cld_pred
+  ! dummy variables for piecewise-tent function
+  integer(i_kind) :: pp
+  real(r_kind)    :: xl, xc, xr
+
 
   real(r_kind),dimension(nchanl):: tcc         
   real(r_kind) :: ptau5deriv, ptau5derivmax
@@ -1345,7 +1354,8 @@ contains
               tsim_clr_bc(i)=tsim_clr_bc(i)+predbias(npred+2,i)
            end do
 
-           if(amsua.or.atms) then
+           ! CCH: define cloud proxy 
+           if ( amsua .or. atms ) then
               ! CCH::
               ! also record the retrieved model CLW without bias correction
               ! i.e., CLW (using BC TBs):   clw_guess_retrieval
@@ -1359,6 +1369,83 @@ contains
               call gmi_37pol_diff(tb_obs(6),tb_obs(7),tsim_clr(6),tsim_clr(7),clw_obs,ierrret)
            end if
 
+           ! CCH: adding cloud predictors into VarBC for all-sky AMSU-A and ATMS:
+           if ( amsua .or. atms ) then
+              if ( io_cld_pred_in_varbc ) then
+
+                 ! cloud predictors can be added to all of the all-sky channels, or subset of channels, defined below:
+                 if ( trim(cld_varbc_chs) == 'low_peaking' ) then
+                    cld_varbc_chs_amsua = (/1,2,3,4,15, -99/)
+                    cld_varbc_chs_atms  = (/1,2,3,4,5,16, -99, -99, -99, -99, -99, -99, -99/)
+                 elseif ( trim(cld_varbc_chs) == 'all_sky' ) then
+                    cld_varbc_chs_amsua = (/1,2,3,4,5,15/)
+                    cld_varbc_chs_atms  = (/1,2,3,4,5,6,16,17,18,19,20,21,22/)
+                 endif
+
+                 ! define the cloud predictors (i.e., symmetric, clw, etc)
+                 select case (trim(cld_pred_varbc))
+                    case ('sym_clw')
+                       cld_pred = 0.5*(clw_guess_retrieval + clw_obs)
+                    case ('sym_clw_nobc')
+                       cld_pred = 0.5*(clw_guess_retrieval_nobc + clw_obs)
+                    case ('model_clw')
+                       cld_pred = clw_guess_retrieval
+                    case ('model_clw_nobc')
+                       cld_pred = clw_guess_retrieval_nobc
+                    case ('obs_clw')
+                       cld_pred = clw_obs
+                    case default
+                       cld_pred = 0  ! not activate for now
+                 end select
+
+                 ! define the functional form (i.e., polynomial, piecewise-tent-function, etc)
+                 do i=1,nchanl
+                    if ( (ANY(cld_varbc_chs_amsua == i) .and. amsua) .or. &
+                         (ANY(cld_varbc_chs_atms  == i) .and. atms ) ) then
+
+                       ! CCH (2024/12/24)
+                       ! the functional form of cloud-dependent BC:  
+                       select case (trim(cld_pred_fn_varbc)) ! select the form of the predictor  
+
+                          case ('tent') ! piecewise-tent function; as a preliminary test, use a hard coded xc = [0.1, 0.2, ..., 0.7]
+                             do pp = 1,7
+                                xc = 0.1*pp ! center
+                                if (pp==7) then
+                                   xl = xc-0.1 
+                                   xr = 1000.0 ! an arbitrary "large" number is fine (so the right part almost looks like a flat line)
+                                else
+                                   xl = xc - 0.1
+                                   xr = xc + 0.1
+                                endif
+                                pred(8+pp,i) = tent_predictor(cld_pred, xl, xc, xr) 
+
+                                ! additional cloud predictor bias correction on O-B
+                                tbc(i)     = tbc(i) - pred(8+pp,i)*predchan(8+pp,i)
+                                tsim_bc(i) = tsim_bc(i) + pred(8+pp,i)*predchan(8+pp,i)
+                             enddo
+
+                          case ('4th_poly')  ! fourth order polynomial
+                             pred(9,i)  = cld_pred
+                             pred(10,i) = cld_pred**2
+                             pred(11,i) = cld_pred**3
+                             pred(12,i) = cld_pred**4
+                             ! additional cloud predictor bias correction on O-B (B_bc=B+bc, so O-B_bc = O-B-bc)
+                             tbc(i)=tbc(i) - pred(9,i) *predchan(9,i)  - pred(10,i)*predchan(10,i) &
+                                           - pred(11,i)*predchan(11,i) - pred(12,i)*predchan(12,i)
+
+                             ! also bias correct tsim_bc:
+                             tsim_bc(i) = tsim_bc(i) + pred(9,i) *predchan(9,i)  + pred(10,i)*predchan(10,i) &
+                                                     + pred(11,i)*predchan(11,i) + pred(12,i)*predchan(12,i)
+
+                       end select ! cld_pred_fn_varbc
+
+                    endif ! cld_varbc_chs_amsua or cld_varbc_chs_atms
+                 enddo ! nchanl
+
+              endif ! io_cld_pred_in_varbc (if adding cloud predictors into VarBC)
+           endif ! atms or amsua
+
+
            if (radmod%ex_obserr=='ex_obserr1') then
 
               ! CCH:: 
@@ -1370,12 +1457,12 @@ contains
               !                         clw_guess_retrieval,clw_obs,cld_rbc_idx,ierrret)
 
               ! determine whether to use CLW(TB w/ BC) or CLW(TB w/o BC) to determine VarBC data control
-              if (use_bc_clw_for_cloud_mismatch) then
+              if (io_use_bc_clw_for_cloud_mismatch) then
                  call ret_amsua(tsim_bc,nchanl,tsavg5,zasat,clw_guess_retrieval,     ierrret)
-                 clw_model = clw_guess_retrieval ! use bias corrected TB for CLW
+                 clw_model = clw_guess_retrieval ! use bias corrected TB for CLW, for VarBC data control
               else
                  call ret_amsua(tsim,   nchanl,tsavg5,zasat,clw_guess_retrieval_nobc,ierrret)
-                 clw_model = clw_guess_retrieval_nobc
+                 clw_model = clw_guess_retrieval_nobc ! use unbias corrected TB for CLW, for VarBC data control (preferred)
               endif
 
               call radiance_ex_biascor(radmod,nchanl,clw_model,clw_obs, &
@@ -2331,6 +2418,29 @@ contains
   return
 
   contains
+
+  ! CCH (2024/12/24)
+  ! tent function for the predictor
+  function tent_predictor(x, xl, xc, xr) result(y)
+    implicit none 
+    real(r_kind), intent(in) :: x, xl, xc, xr ! (xl,xc,xr) = (left, center, right)
+    real(r_kind) :: y
+
+    if (x <= xl) then
+      y = 0.0
+    else if (x > xl .and. x <= xc) then
+      y = (x - xl) / (xc - xl)
+    else if (x > xc .and. x <= xr) then
+      y = (x - xr) / (xc - xr)
+    else
+      y = 0.0
+    endif
+
+  end function tent_predictor
+
+
+
+
   function tailNode_typecast_(oll) result(ptr_)
 !>  Cast the tailNode of oll to an radNode, as in
 !>      ptr_ => typecast_(tailNode_(oll))
