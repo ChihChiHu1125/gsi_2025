@@ -1131,7 +1131,7 @@ contains
 ! the major function of radiance_ex_biascor is to determine cld_rbc_idx & cld_rbc_idx_varbc
 ! note that arguments of this function have been modified:
 
-  subroutine radiance_ex_biascor_1(radmod,nchanl,clw_model,clw_obs, &
+  subroutine radiance_ex_biascor_1(radmod,nchanl,cld_pred_model,cld_pred_obs, &
                                    cld_rbc_idx,cld_rbc_idx_varbc,ierrret)
 
 !$$$  subprogram documentation block
@@ -1170,12 +1170,8 @@ contains
 
     type(rad_obs_type)                ,intent(in)    :: radmod
     integer(i_kind)                   ,intent(in   ) :: nchanl
-    !real(r_kind),dimension(nchanl)    ,intent(in   ) :: tsim_bc
-    !real(r_kind)                      ,intent(in   ) :: tsavg5,zasat
-    real(r_kind)                      ,intent(in   ) :: clw_model, clw_obs
+    real(r_kind),dimension(nchanl)    ,intent(in   ) :: cld_pred_model, cld_pred_obs
     real(r_kind),dimension(nchanl)    ,intent(inout) :: cld_rbc_idx, cld_rbc_idx_varbc
-    !real(r_kind)                      ,intent(inout) :: clwp_amsua
-    !real(r_kind)                      ,intent(inout) :: clw_guess_retrieval
     integer(i_kind)                   ,intent(  out) :: ierrret
 
     integer(i_kind) :: i
@@ -1207,19 +1203,19 @@ contains
        if (radmod%lcloud4crtm(i)<0) cycle
 
        ! CTRL (clear-clear & cloudy-cloudy as in Zhu et al 2014; 2016; 2019, etc)
-       if ((clw_model-cclr(i))*(clw_obs-cclr(i))<zero  &
-          .and. abs(clw_model-clw_obs)>=0.005_r_kind) cld_rbc_idx(i)=zero
+       if ((cld_pred_model(i)-cclr(i))*(cld_pred_obs(i)-cclr(i))<zero  &
+          .and. abs(cld_pred_model(i)-cld_pred_obs(i))>=0.005_r_kind) cld_rbc_idx(i)=zero
 
        ! CCH:: add new handles to control data goes into varbc:
        select case (trim(varbc_data_control))
           case ('only_clr_clr')
-             if ( (clw_obs>cclr(i)).or.(clw_model>cclr(i)) ) cld_rbc_idx_varbc(i)=zero
+             if ( (cld_pred_obs(i)>cclr(i)).or.(cld_pred_model(i)>cclr(i)) ) cld_rbc_idx_varbc(i)=zero
 
           case ('only_clr_clr_low')
              ! only lower tropospheric sensitive channel uses the "only-clr-clr" data
              ! other all-sky channels follow the original VarBC (stricter)
              if ( ANY(i == low_sens_ch) ) then
-                 if ( (clw_obs>cclr(i)).or.(clw_model>cclr(i)) ) cld_rbc_idx_varbc(i)=zero
+                 if ( (cld_pred_obs(i)>cclr(i)).or.(cld_pred_model(i)>cclr(i)) ) cld_rbc_idx_varbc(i)=zero
              else ! follow the original (more relaxed) criteria for other channels
                 cld_rbc_idx_varbc(i)=cld_rbc_idx(i)
              endif
@@ -1227,15 +1223,15 @@ contains
           case ('clr_clr_and_cld_cld')
              ! cld_cld_varbc_constraint is used to define the "cloudy-consistent" data
              ! to go in varbc for minimization
-             if (    (clw_obs-cclr(i))*(clw_model-cclr(i))<zero  &
-                 .or. abs(clw_obs-clw_model)> cld_cld_varbc_constraint ) cld_rbc_idx_varbc(i)=zero
+             if (    (cld_pred_obs(i)-cclr(i))*(cld_pred_model(i)-cclr(i))<zero  &
+                 .or. abs(cld_pred_obs(i)-cld_pred_model(i))> cld_cld_varbc_constraint ) cld_rbc_idx_varbc(i)=zero
 
           case ('clr_clr_and_cld_cld_low')
              ! only lower tropospheric sensitive channel uses the "cloudy-consistent" data
              ! other all-sky channels follow the original VarBC (stricter)
              if ( ANY(i == low_sens_ch) ) then
-                if (    (clw_obs-cclr(i))*(clw_model-cclr(i))<zero  &
-                    .or. abs(clw_obs-clw_model)> cld_cld_varbc_constraint ) cld_rbc_idx_varbc(i)=zero
+                if (    (cld_pred_obs(i)-cclr(i))*(cld_pred_model(i)-cclr(i))<zero  &
+                    .or. abs(cld_pred_obs(i)-cld_pred_model(i))> cld_cld_varbc_constraint ) cld_rbc_idx_varbc(i)=zero
              else ! follow the original (more relaxed) criteria for other channels
                 cld_rbc_idx_varbc(i)=cld_rbc_idx(i)
              endif

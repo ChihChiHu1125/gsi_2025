@@ -79,7 +79,7 @@
 
 ! CCH::
   use radinfo, only: varbc_data_control, cld_cld_varbc_constraint, io_use_bc_clw_for_cloud_mismatch,&
-                     io_cld_pred_in_varbc, cld_varbc_chs, cld_pred_varbc, cld_pred_fn_varbc,&
+                     io_cld_pred_in_varbc, cld_varbc_chs, type_cld_pred_varbc, cld_pred_fn_varbc,&
                      io_empirical_inflation
 
   use ozinfo, only: diag_ozone,init_oz
@@ -825,7 +825,7 @@
        l_use_dbz_directDA, l_use_rw_columntilt, ta2tb, optconv, &
        r_hgt_fed, &
        varbc_data_control, cld_cld_varbc_constraint, io_use_bc_clw_for_cloud_mismatch, &
-       io_cld_pred_in_varbc, cld_varbc_chs, cld_pred_varbc, cld_pred_fn_varbc, &
+       io_cld_pred_in_varbc, cld_varbc_chs, type_cld_pred_varbc, cld_pred_fn_varbc, &
        io_empirical_inflation
 
 ! GRIDOPTS (grid setup variables,including regional specific variables):

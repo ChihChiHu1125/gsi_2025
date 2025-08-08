@@ -130,7 +130,7 @@ module radinfo
   public :: varbc_data_control, cld_cld_varbc_constraint, io_use_bc_clw_for_cloud_mismatch
 
   ! VarBC cloud predictors:
-  public :: io_cld_pred_in_varbc, cld_varbc_chs, cld_pred_varbc, cld_pred_fn_varbc
+  public :: io_cld_pred_in_varbc, cld_varbc_chs, type_cld_pred_varbc, cld_pred_fn_varbc
 
   ! empirical inflation:
   public :: io_empirical_inflation
@@ -270,7 +270,7 @@ module radinfo
   logical :: io_cld_pred_in_varbc             ! whether to include cloud predictors in VarBC
   ! the following variables only matter if io_cld_pred_in_varbc == .true.
   character(len=100):: cld_varbc_chs          ! defined the subset of channels that include cloud predictors
-  character(len=100):: cld_pred_varbc         ! symmetric cloud, model cloud, obs cloud
+  character(len=100):: type_cld_pred_varbc    ! type of cloud predictor in VarBC. e.g., symmetric cloud, model cloud, obs cloud
   character(len=100):: cld_pred_fn_varbc      ! functional form of cloud predictors (polynomial, tent function, etc)
 
   ! empirical inflation:
@@ -381,6 +381,7 @@ contains
                                              ! clr_clr_and_cld_cld_low = use "clr_clr_and_cld_cld" approach only for lower tropospheric sensitive channels 
                                              !                           use "default" for the other all-sky channels
    io_use_bc_clw_for_cloud_mismatch = .true. ! whether using bias corrected TB to define the model CLW for VarBC data control
+                                             ! when usig cloud predictors (io_cld_pred_in_varbc = .true.) recommend turning this to .false.
    cld_cld_varbc_constraint = 0.05_r_kind    ! definition for "cloudy-consistent" data for varbc (see varbc_data_control)
 
    ! VarBC cloud predictors:
@@ -388,10 +389,11 @@ contains
    cld_varbc_chs = 'low_peaking'             ! which channels to include cloud predictors
                                              ! all_sky = all of the AMSU-A/ATMS all-sky channels
                                              ! low_peaking = low-peaking all-sky AMSU-A/ATMS channels
-   cld_pred_varbc = 'sym_clw_nobc'           ! cloud predictor definitions
-                                             ! sym_clw, sym_clw_nobc = symmetric Cloud Liquid Water (CLW) w/ or w/o BC
-                                             ! model_clw, model_clw_nobc = model CLW w/ or w/o BC
-                                             ! obs_clw = obs CLW
+   type_cld_pred_varbc = 'sym_clw'           ! type of cloud predictor definitions in VarBC:
+                                             ! sym_clw = symmetric CLW
+                                             ! sym_ch3 = ch3 cloud effect (Duncan et al. 2022)
+                                             ! sym_lwp_si = SI + LWP (Duncan et al. 2022)
+                                             ! sym_ch_depend = channel-dependent cloud effect
    cld_pred_fn_varbc = 'tent'                ! functional form for cloud-dependent BC
                                              ! tent = piecewise tent function
                                              ! 4th_poly = 4th order polynomial
