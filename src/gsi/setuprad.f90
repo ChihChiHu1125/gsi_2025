@@ -249,7 +249,11 @@ contains
       varch_sea,varch_land,varch_ice,varch_snow,varch_mixed,allsky_verbose
 ! CCH::
   use radinfo, only: io_use_bc_clw_for_cloud_mismatch, &
-                     io_cld_pred_in_varbc, cld_varbc_chs, type_cld_pred_varbc, cld_pred_fn_varbc
+                     io_cld_pred_in_varbc, cld_varbc_chs, type_cld_pred_varbc, cld_pred_fn_varbc, &
+                     io_save_jacobian_cch
+
+  use radiance_mod, only: n_clouds_jac,cloud_names_jac, &
+                          n_clouds_fwd,cloud_names_fwd
 
   use gsi_nstcouplermod, only: nstinfo
   use read_diag, only: get_radiag,ireal_radiag,ipchan_radiag
@@ -436,9 +440,14 @@ contains
   integer(i_kind) :: pp
   real(r_kind)    :: xl, xc, xr
 
-
   ! to separate symmetric error & non-Gaussian error:
   real(r_kind),dimension(nchanl):: error0, error_sym_cld
+
+  ! dummy variables to save Jacobian into netcdf:
+  character(len=50):: cloud_type_name, netcdf_var_name
+  ! if io_save_jacobian_cch = .true. also output surface wind (uu5,vv5) and their jacobian for diagnostics
+  real(r_kind)                    :: u_in,  v_in
+  real(r_kind), dimension(nchanl) :: u_jac, v_jac
 
 
   real(r_kind),dimension(nchanl):: tcc         
@@ -1009,7 +1018,21 @@ contains
                    end do
                 end do
              end if
+
+          elseif (io_save_jacobian_cch) then ! directly save Jacobian (jacobian0) and inner domain (atprofile) into netcdf
+                                             ! also output surface wind information
+
+             call call_crtm(obstype,dtime,data_s(:,n),nchanl,nreal,ich, &
+                  tvp,qvp,qs,clw_guess,ciw_guess,rain_guess,snow_guess,graupel_guess, &
+                  prsltmp,prsitmp,trop5,tzbgr,dtsavg,sfc_speed, &
+                  tsim,emissivity,chan_level,ptau5,ts,emissivity_k, &
+                  temp,wmix,jacobian,error_status,tsim_clr=tsim_clr,tcc=tcc, & 
+                  tcwv=tcwv,hwp_ratio=hwp_ratio,stability=stability, &
+                  pcp_mask=pcp_mask,jacobian0=jacobian0,atprofile=atprofile, &
+                  u_in=u_in, v_in=v_in, u_jac=u_jac, v_jac=v_jac) 
+
           else
+
              call call_crtm(obstype,dtime,data_s(:,n),nchanl,nreal,ich, &
                   tvp,qvp,qs,clw_guess,ciw_guess,rain_guess,snow_guess,graupel_guess, &
                   prsltmp,prsitmp,trop5,tzbgr,dtsavg,sfc_speed, &
@@ -3037,6 +3060,46 @@ contains
                  errinv = sqrt(varinv(ich_diag(i)))
                  call nc_diag_metadata_to_single("Inverse_Observation_Error_scaled",errinv           )
                  endif
+
+                 ! CCH: output of Jacobian/Inner domain variables for radiance observations
+                 if ( io_save_jacobian_cch .and. (amsua.or.atms)) then
+                    ! the input model state to CRTM -- surface variables
+                    call nc_diag_metadata_to_single("Inner_domain_U", u_in) 
+                    call nc_diag_metadata_to_single("Inner_domain_V", v_in) 
+
+
+                    ! the input model state to CRTM -- atmosphere profile (look at crtm_interface.f90 to see the order of variables)
+                    call nc_diag_data2d("Inner_domain_Pressure",    real(atprofile(:,1),r_single))
+                    call nc_diag_data2d("Inner_domain_Temperature", real(atprofile(:,2),r_single)) 
+                    call nc_diag_data2d("Inner_domain_Water_Vapor", real(atprofile(:,3),r_single)) 
+                    !call nc_diag_data2d("Inner_domain_Ozone",       real(atprofile(:,4),r_single)) 
+                    !call nc_diag_data2d("Inner_domain_Cloud_Frac", real(atprofile(:,5),r_single))
+
+                    do ii = 1, n_clouds_fwd ! cloud variables
+                       cloud_type_name = cloud_names_fwd(ii)
+                       netcdf_var_name = "Inner_domain_"//trim(cloud_type_name)
+                       call nc_diag_data2d(netcdf_var_name,  real(atprofile(:,5+ii),r_single)) 
+                    enddo
+
+                    ! the Jacobian output from CRTM -- surface variables
+                    call nc_diag_metadata_to_single("Jacobian_U", u_jac(ich_diag(i)))
+                    call nc_diag_metadata_to_single("Jacobian_V", v_jac(ich_diag(i)))
+                    call nc_diag_metadata_to_single("Jacobian_Surface_Temp", ts(ich_diag(i)))
+
+                    
+                    ! the Jacobian output from CRTM -- atmosphere profile (loot at crtm_interface.f90 to see the order of variables)
+                    call nc_diag_data2d("Jacobian_Temperature", real(jacobian0(             1:       msig,ich_diag(i)),r_single))
+                    call nc_diag_data2d("Jacobian_Water_Vapor", real(jacobian0(        msig+1:     2*msig,ich_diag(i)),r_single))
+                    !call nc_diag_data2d("Jacobian_Ozone",       real(jacobian0(      2*msig+1:     3*msig,ich_diag(i)),r_single))
+
+                    do ii = 1, n_clouds_jac ! cloud variables
+                       cloud_type_name = cloud_names_jac(ii)
+                       netcdf_var_name = "Jacobian_"//trim(cloud_type_name)
+                       call nc_diag_data2d(netcdf_var_name,     real(jacobian0( (2+ii)*msig+1:(3+ii)*msig,ich_diag(i)),r_single))
+                    enddo
+
+                 endif
+
                  if (save_jacobian) then
                     j = 1
                     do ii = 1, nvarjac

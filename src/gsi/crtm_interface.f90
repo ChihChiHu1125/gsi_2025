@@ -1013,6 +1013,8 @@ subroutine destroy_crtm
 
   return
 end subroutine destroy_crtm
+
+! CCH: add additional (optional) input argument:
 subroutine call_crtm(obstype,obstime,data_s,nchanl,nreal,ich, &
                    h,q,qs,clw_guess,ciw_guess,rain_guess,snow_guess, &
                    graupel_guess,prsl,prsi, &
@@ -1020,7 +1022,8 @@ subroutine call_crtm(obstype,obstime,data_s,nchanl,nreal,ich, &
                    tsim,emissivity,chan_level,ptau5,ts, &
                    emissivity_k,temp,wmix,jacobian,error_status,tsim_clr,tcc, & 
                    tcwv,hwp_ratio,stability,layer_od,jacobian_aero, &
-                   pcp_mask,jacobian0,atprofile)  
+                   pcp_mask,jacobian0,atprofile,&
+                   u_in, v_in, u_jac, v_jac)  
 !$$$  subprogram documentation block
 !                .      .    .                                       .
 ! subprogram:    call_crtm   creates vertical profile of t,q,oz,p,zs,etc., 
@@ -1167,6 +1170,11 @@ subroutine call_crtm(obstype,obstime,data_s,nchanl,nreal,ich, &
   logical                               ,intent(  out)  ,optional :: pcp_mask
   real(4),dimension(msig,10)            ,intent(  out)  ,optional :: atprofile
   real(4),dimension(msig*8,nchanl)      ,intent(  out)  ,optional :: jacobian0
+  ! CCH: also export (u,v) if requested; (u_in,v_in) = surface wind vector input to CRTM
+  ! (u_jac, v_jac) = surface wind Jacobian
+  real(r_kind)                          ,intent(  out)  ,optional :: u_in,  v_in
+  real(r_kind),dimension(nchanl)        ,intent(  out)  ,optional :: u_jac, v_jac
+
 
 ! Declare local parameters
   character(len=*),parameter::myname_=myname//'*call_crtm'
@@ -1593,6 +1601,11 @@ subroutine call_crtm(obstype,obstime,data_s,nchanl,nreal,ich, &
                   vges_itsig (ix,iyp,1)*w01+vges_itsig (ixp,iyp,1)*w11)*dtsig + &
                  (vges_itsigp(ix,iy ,1)*w00+vges_itsigp(ixp,iy ,1)*w10+ &
                   vges_itsigp(ix,iyp,1)*w01+vges_itsigp(ixp,iyp,1)*w11)*dtsigp
+
+             ! CCH: if requested, export (uu5, vv5)
+             if (present(u_in)) u_in = uu5
+             if (present(v_in)) v_in = vv5
+
              f10=data_s(iff10)
              sfc_speed = f10*sqrt(uu5*uu5+vv5*vv5)
              wind10    = sfc_speed 
@@ -2435,6 +2448,10 @@ subroutine call_crtm(obstype,obstime,data_s,nchanl,nreal,ich, &
           uwind_k(i)    = zero
           vwind_k(i)    = zero
        endif
+
+       ! CCH: output the (u,v) Jacobian from CRTM (on CRTM original grid):
+       if (present(u_jac)) u_jac(i) = uwind_k(i)
+       if (present(v_jac)) v_jac(i) = vwind_k(i)
 
 
        total_od = zero

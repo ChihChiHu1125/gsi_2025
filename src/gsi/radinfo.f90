@@ -135,6 +135,9 @@ module radinfo
   ! empirical inflation:
   public :: io_empirical_inflation
 
+  ! save Jacobian:
+  public :: io_save_jacobian_cch
+
   integer(i_kind),parameter:: numt = 33   ! size of AVHRR bias correction file
   integer(i_kind),parameter:: ntlapthresh = 100 ! threshhold value of cycles if tlapmean update is needed
 
@@ -276,6 +279,9 @@ module radinfo
   ! empirical inflation:
   logical :: io_empirical_inflation           ! whether to use empirical inflation (Zhu et al 2016) for all-sky AMSUA/ATMS channels
 
+  ! save Jacobian:
+  logical :: io_save_jacobian_cch             ! whether to save inner domain and Jacobians for AMSUA/ATMS
+
 
   character(len=*),parameter :: myname='radinfo'
 contains
@@ -399,9 +405,10 @@ contains
                                              ! 4th_poly = 4th order polynomial
 
    ! empirical inflation:
-   io_empirical_inflation = .true.              ! whether to use the empirical inflation from Zhu et al. (2016)
+   io_empirical_inflation = .true.           ! whether to use the empirical inflation from Zhu et al. (2016)
 
-
+   ! save Jacobian:
+   io_save_jacobian_cch = .true.             ! whether to save inner domain and Jacobian for AMSUA/ATMS channels
 
   end subroutine init_rad
 
