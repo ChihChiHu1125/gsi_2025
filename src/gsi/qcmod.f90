@@ -161,7 +161,7 @@ module qcmod
   use radiance_mod, only: rad_obs_type
 
 ! CCH:
-  use radinfo, only: io_empirical_inflation
+  use radinfo, only: io_empirical_inflation, io_scatter_assim
 
   implicit none
 
@@ -3337,43 +3337,82 @@ subroutine qc_amsua(nchanl,is,ndat,nsig,npred,sea,land,ice,snow,mixed,luse,   &
            ! for precipitating clouds
            if(radmod%lprecip) then
               if (cldeff_obs(ich536) < -0.50_r_kind .or. cldeff_fg(ich536) < -0.5_r_kind) then
-                 efactmc=zero
-                 vfactmc=zero
-                 errf(1:ich544)=zero
-                 varinv(1:ich544)=zero
-                 do i=1,ich544
-                    if(id_qc(i) == igood_qc)id_qc(i)=ifail_factch5_qc
-                 end do
-                 if(id_qc(ich890) == igood_qc)id_qc(ich890)=ifail_factch5_qc
-                 errf(ich890) = zero
-                 varinv(ich890) = zero
-                 if (latms) then
-                    do i=17,22   !  AMSU-B/MHS like channels
+
+                 ! CCH: allow obs with scattering to be assimilated.
+                 if ( io_scatter_assim ) then ! assimilate scattering obs with "flag"
+
+                    do i=1,ich544
                        if(id_qc(i) == igood_qc)id_qc(i)=ifail_factch5_qc
-                       errf(i) = zero
-                       varinv(i) = zero
-                    enddo
-                 endif
-              else if (latms) then
-                 if (abs(cldeff_obs(16)-cldeff_obs(17))>10.0_r_kind) then
-                    if(id_qc(ich890) == igood_qc)id_qc(ich890)=ifail_factch1617_qc
+                    end do
+                    if(id_qc(ich890) == igood_qc)id_qc(ich890)=ifail_factch5_qc
+
+                    if (latms) then
+                       do i=17,22   !  AMSU-B/MHS like channels
+                          if(id_qc(i) == igood_qc)id_qc(i)=ifail_factch5_qc
+                       enddo
+                    endif
+
+                 else ! kick out scattering obs
+                    efactmc=zero
+                    vfactmc=zero
+                    errf(1:ich544)=zero
+                    varinv(1:ich544)=zero
+                    do i=1,ich544
+                       if(id_qc(i) == igood_qc)id_qc(i)=ifail_factch5_qc
+                    end do
+                    if(id_qc(ich890) == igood_qc)id_qc(ich890)=ifail_factch5_qc
                     errf(ich890) = zero
                     varinv(ich890) = zero
-                    do i=17,22   !  AMSU-B/MHS like channels
-                       if(id_qc(i) == igood_qc)id_qc(i)=ifail_factch1617_qc
-                       errf(i) = zero
-                       varinv(i) = zero
-                    enddo
-                    if (abs(cldeff_obs(16)-cldeff_obs(17))>15.0_r_kind) then
-                       efactmc=zero
-                       vfactmc=zero
-                       errf(1:ich544)=zero
-                       varinv(1:ich544)=zero
-                       do i=1,ich544
+                    if (latms) then
+                       do i=17,22   !  AMSU-B/MHS like channels
+                          if(id_qc(i) == igood_qc)id_qc(i)=ifail_factch5_qc
+                          errf(i) = zero
+                          varinv(i) = zero
+                       enddo
+                    endif
+
+                 endif ! io_no_scatter
+
+
+              else if (latms) then
+
+                 ! CCH: allow obs with scattering to be assimilated.
+                 if ( io_scatter_assim ) then ! assimilate scattering obs with "flag"
+
+                    if (abs(cldeff_obs(16)-cldeff_obs(17))>10.0_r_kind) then
+                       if(id_qc(ich890) == igood_qc)id_qc(ich890)=ifail_factch1617_qc
+                       do i=17,22   !  AMSU-B/MHS like channels
                           if(id_qc(i) == igood_qc)id_qc(i)=ifail_factch1617_qc
-                       end do
+                       enddo
+                       if (abs(cldeff_obs(16)-cldeff_obs(17))>15.0_r_kind) then
+                          do i=1,ich544
+                             if(id_qc(i) == igood_qc)id_qc(i)=ifail_factch1617_qc
+                          end do
+                       end if
                     end if
-                 end if
+
+                 else ! kick out scattering obs
+                    if (abs(cldeff_obs(16)-cldeff_obs(17))>10.0_r_kind) then
+                       if(id_qc(ich890) == igood_qc)id_qc(ich890)=ifail_factch1617_qc
+                       errf(ich890) = zero
+                       varinv(ich890) = zero
+                       do i=17,22   !  AMSU-B/MHS like channels
+                          if(id_qc(i) == igood_qc)id_qc(i)=ifail_factch1617_qc
+                          errf(i) = zero
+                          varinv(i) = zero
+                       enddo
+                       if (abs(cldeff_obs(16)-cldeff_obs(17))>15.0_r_kind) then
+                          efactmc=zero
+                          vfactmc=zero
+                          errf(1:ich544)=zero
+                          varinv(1:ich544)=zero
+                          do i=1,ich544
+                             if(id_qc(i) == igood_qc)id_qc(i)=ifail_factch1617_qc
+                          end do
+                       end if
+                    end if
+                 end if ! io_no_scatter
+
                 ! test in the future
                 ! if (si_mean >= 20.0_r_kind) then
                 !    efactmc=zero

@@ -80,7 +80,7 @@
 ! CCH::
   use radinfo, only: varbc_data_control, cld_cld_varbc_constraint, io_use_bc_clw_for_cloud_mismatch,&
                      io_cld_pred_in_varbc, cld_varbc_chs, type_cld_pred_varbc, cld_pred_fn_varbc,&
-                     io_empirical_inflation, io_save_jacobian_cch
+                     io_empirical_inflation, io_save_jacobian_cch, io_scatter_assim
 
   use ozinfo, only: diag_ozone,init_oz
   use aeroinfo, only: diag_aero, init_aero, init_aero_vars, final_aero_vars
@@ -826,7 +826,7 @@
        r_hgt_fed, &
        varbc_data_control, cld_cld_varbc_constraint, io_use_bc_clw_for_cloud_mismatch, &
        io_cld_pred_in_varbc, cld_varbc_chs, type_cld_pred_varbc, cld_pred_fn_varbc, &
-       io_empirical_inflation, io_save_jacobian_cch
+       io_empirical_inflation, io_save_jacobian_cch, io_scatter_assim
 
 ! GRIDOPTS (grid setup variables,including regional specific variables):
 !     jcap     - spectral resolution

@@ -138,6 +138,9 @@ module radinfo
   ! save Jacobian:
   public :: io_save_jacobian_cch
 
+  ! scattering obs QC:
+  public :: io_scatter_assim
+
   integer(i_kind),parameter:: numt = 33   ! size of AVHRR bias correction file
   integer(i_kind),parameter:: ntlapthresh = 100 ! threshhold value of cycles if tlapmean update is needed
 
@@ -282,6 +285,8 @@ module radinfo
   ! save Jacobian:
   logical :: io_save_jacobian_cch             ! whether to save inner domain and Jacobians for AMSUA/ATMS
 
+  ! scattering obs QC:
+  logical :: io_scatter_assim                 ! whether to assimilate scattering affected obs
 
   character(len=*),parameter :: myname='radinfo'
 contains
@@ -409,6 +414,9 @@ contains
 
    ! save Jacobian:
    io_save_jacobian_cch = .true.             ! whether to save inner domain and Jacobian for AMSUA/ATMS channels
+
+   ! scattering obs QC:
+   io_scatter_assim = .false.                ! whether to assimilate scattering affected obs
 
   end subroutine init_rad
 
