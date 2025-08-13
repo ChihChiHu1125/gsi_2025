@@ -433,8 +433,10 @@ contains
 
   ! different definitions of cloud predictors
   real(r_kind)    :: cld_ch3_model, cld_ch3_obs
-  real(r_kind)    :: C_SI_model, C_SI_obs, cld_LWP_SI_model, cld_LWP_SI_obs
-  integer(i_kind) :: ich238, ich503, ich890
+  real(r_kind)    :: SI_ch1_ch15_model, SI_ch16_ch17_model
+  real(r_kind)    :: SI_ch1_ch15_obs, SI_ch16_ch17_obs
+  real(r_kind)    :: cld_LWP_SI_model, cld_LWP_SI_obs
+  integer(i_kind) :: ich238, ich503, ich890, ich165
 
   ! dummy variables for piecewise-tent function
   integer(i_kind) :: pp
@@ -1395,6 +1397,7 @@ contains
                  ich238 =  1
                  ich503 =  3
                  ich890 = 16
+                 ich165 = 17 
               else ! otherwise, it's amsua
                  ich238 =  1
                  ich503 =  3
@@ -1412,11 +1415,19 @@ contains
               cld_ch3_model = abs(cldeff_fg(ich503))
               cld_ch3_obs   = abs(cldeff_obs(ich503))
 
+              ! Scattering Index (equation 4 in Zhu et al. 2019; or equation 2 in Shahabadi and Buehner 2024)
+              if ( atms ) then
+                 SI_ch16_ch17_model = cldeff_fg(ich890)  - cldeff_fg(ich165)
+                 SI_ch16_ch17_obs   = cldeff_obs(ich890) - cldeff_obs(ich165)
+              endif
+
+              ! Scattering Index (using ch1 & 15; equation 4 in Duncan et al. 2022)
+              SI_ch1_ch15_model = cldeff_fg(ich238) - cldeff_fg(ich890)
+              SI_ch1_ch15_obs   = cldeff_obs(ich238) - cldeff_obs(ich890)
+
               ! LWP+SI (equation 4-5 in Duncan et al. 2022) (LWP = CLW)
-              C_SI_model = (tsim(ich238)-tsim(ich890)) - (tsim_clr(ich238)-tsim_clr(ich890))
-              C_SI_obs   = (tb_obs(ich238)-tb_obs(ich890)) - (tsim_clr(ich238)-tsim_clr(ich890))
-              cld_LWP_SI_model = clw_guess_retrieval_nobc + max(0.0,C_SI_model/30.0)
-              cld_LWP_SI_obs   = clw_obs + max(0.0,C_SI_obs/30.0)
+              cld_LWP_SI_model = clw_guess_retrieval_nobc + max(0.0,SI_ch1_ch15_model/30.0)
+              cld_LWP_SI_obs   = clw_obs + max(0.0,SI_ch1_ch15_obs/30.0)
 
               ! channel-dependent cloud proxy
               ! directly use cldeff_obs(:), cldeff_fg(:), or cldeff_obs_bc(:) as cloud proxy for each (all-sky) channel
@@ -3044,7 +3055,15 @@ contains
                     call nc_diag_metadata_to_single("Cloud_Proxy_Ch3_Obs",          cld_ch3_obs)   ! cloud proxy (ch3) from observation
                     call nc_diag_metadata_to_single("Cloud_Proxy_Ch3_Model",      cld_ch3_model)   ! cloud proxy (ch3) from model
                     call nc_diag_metadata_to_single("Cloud_Proxy_LWP_SI_Obs",    cld_LWP_SI_obs)   ! cloud proxy (LWP+SI) from observation
-                    call nc_diag_metadata_to_single("Cloud_Proxy_LWP_SI_Model",cld_LWP_SI_model)   ! cloud proxy (LWP+SI) from observation
+                    call nc_diag_metadata_to_single("Cloud_Proxy_LWP_SI_Model",cld_LWP_SI_model)   ! cloud proxy (LWP+SI) from model
+
+                    ! record the scattering indices
+                    call nc_diag_metadata_to_single("SI_CH1_CH15_Obs",      SI_ch1_ch15_obs)   ! scattering index (ch16,17)from observation
+                    call nc_diag_metadata_to_single("SI_CH1_CH15_Model",  SI_ch1_ch15_model)   ! scattering index (ch16,17)from model
+                    if (atms) then
+                       call nc_diag_metadata_to_single("SI_CH16_CH17_Obs",      SI_ch16_ch17_obs)   ! scattering index (ch16,17)from observation
+                       call nc_diag_metadata_to_single("SI_CH16_CH17_Model",  SI_ch16_ch17_model)   ! scattering index (ch16,17)from model
+                    endif
 
                  endif
 
