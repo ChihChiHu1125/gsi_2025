@@ -249,7 +249,7 @@ contains
       varch_sea,varch_land,varch_ice,varch_snow,varch_mixed,allsky_verbose
 ! CCH::
   use radinfo, only: io_use_bc_clw_for_cloud_mismatch, &
-                     io_cld_pred_in_varbc, cld_varbc_chs, type_cld_pred_varbc, cld_pred_fn_varbc, &
+                     io_cld_pred_in_varbc, cld_varbc_chs, cld_pred_fn_varbc, &
                      io_save_jacobian_cch
 
   use radiance_mod, only: n_clouds_jac,cloud_names_jac, &
@@ -433,8 +433,8 @@ contains
 
   ! different definitions of cloud predictors
   real(r_kind)    :: cld_ch3_model, cld_ch3_obs
-  real(r_kind)    :: SI_ch1_ch15_model, SI_ch16_ch17_model
-  real(r_kind)    :: SI_ch1_ch15_obs, SI_ch16_ch17_obs
+  real(r_kind)    :: SI_ch1_ch15_model, SI_ch1_ch2_ch15_model, SI_ch16_ch17_model
+  real(r_kind)    :: SI_ch1_ch15_obs, SI_ch1_ch2_ch15_obs, SI_ch16_ch17_obs
   real(r_kind)    :: cld_LWP_SI_model, cld_LWP_SI_obs
   integer(i_kind) :: ich238, ich503, ich890, ich165
 
@@ -1390,9 +1390,11 @@ contains
               tsim_clr_bc(i)=tsim_clr_bc(i)+predbias(npred+2,i)
            end do
 
-           ! CCH: define cloud proxy 
+           ! CCH: for amsua & atms channels: define cloud proxy (differently for each channel)
+           !      the cloud proxy will be used for
+           !      (1) data control strategy: comparing model & obs cloud to define "cloud-consistency"
+           !      (2) cloud predictors in VarBC
            if ( amsua .or. atms ) then
-
               if (nchanl == 22) then ! If there are 22 channels passed along, it's atms
                  ich238 =  1
                  ich503 =  3
@@ -1404,44 +1406,76 @@ contains
                  ich890 = 15
               endif
 
-              ! retrieved CLW w/ or w/o bias correction
+              ! First, define several potential candidates for cloud predictors
+              ! for now, not all of them are used, but they are stored in diag_*.nc for potential future use 
+
+              ! proxy candidate -- retrieved CLW and scattering indices (using CH1,2,15)
               ! i.e., CLW (using BC TBs):   clw_guess_retrieval
               !       CLW (using NOBC TBs): clw_guess_retrieval_nobc
               call ret_amsua(tsim_bc,nchanl,tsavg5,zasat,clw_guess_retrieval,     ierrret)
-              call ret_amsua(tsim   ,nchanl,tsavg5,zasat,clw_guess_retrieval_nobc,ierrret)
+              call ret_amsua(tsim   ,nchanl,tsavg5,zasat,clw_guess_retrieval_nobc,ierrret, SI_ch1_ch2_ch15_model)
+              call ret_amsua(tb_obs, nchanl,tsavg5,zasat,clw_obs,ierrret,SI_ch1_ch2_ch15_obs)
               ! observed cloud proxy for CLW is clw_obs
 
-              ! ch3-based cloud proxy (equation 6 in Duncan et al. 2022)
+              ! proxy candidate -- ch3-based cloud proxy (equation 6 in Duncan et al. 2022)
               cld_ch3_model = abs(cldeff_fg(ich503))
               cld_ch3_obs   = abs(cldeff_obs(ich503))
 
-              ! Scattering Index (equation 4 in Zhu et al. 2019; or equation 2 in Shahabadi and Buehner 2024)
+              ! proxy candidate -- Scattering Index (equation 4 in Zhu et al. 2019; or equation 2 in Shahabadi and Buehner 2024)
               if ( atms ) then
                  SI_ch16_ch17_model = cldeff_fg(ich890)  - cldeff_fg(ich165)
                  SI_ch16_ch17_obs   = cldeff_obs(ich890) - cldeff_obs(ich165)
               endif
 
-              ! Scattering Index (using ch1 & 15; equation 4 in Duncan et al. 2022)
+              ! proxy candidate -- Scattering Index (using ch1 & 15; equation 4 in Duncan et al. 2022)
               SI_ch1_ch15_model = cldeff_fg(ich238) - cldeff_fg(ich890)
               SI_ch1_ch15_obs   = cldeff_obs(ich238) - cldeff_obs(ich890)
 
-              ! LWP+SI (equation 4-5 in Duncan et al. 2022) (LWP = CLW)
+              ! proxy candidate -- LWP+SI (equation 4-5 in Duncan et al. 2022) (LWP = CLW)
               cld_LWP_SI_model = clw_guess_retrieval_nobc + max(0.0,SI_ch1_ch15_model/30.0)
               cld_LWP_SI_obs   = clw_obs + max(0.0,SI_ch1_ch15_obs/30.0)
 
-              ! channel-dependent cloud proxy
+              ! proxy candidate -- channel-dependent cloud proxy
               ! directly use cldeff_obs(:), cldeff_fg(:), or cldeff_obs_bc(:) as cloud proxy for each (all-sky) channel
               ! potential issue: each channel may have very different range of cloud proxy
 
-           else if(gmi) then
-              call gmi_37pol_diff(tsim(6),tsim(7),tsim_clr(6),tsim_clr(7),clw_guess_retrieval,ierrret)
-              call gmi_37pol_diff(tb_obs(6),tb_obs(7),tsim_clr(6),tsim_clr(7),clw_obs,ierrret)
-           end if
+              ! define which channel uses which cloud predictors below:
+              cld_pred_varbc_model = 0
+              cld_pred_varbc_obs   = 0
+              cld_pred_varbc_use   = 0
 
-           ! CCH: adding cloud predictors into VarBC for all-sky AMSU-A and ATMS:
-           if ( amsua .or. atms ) then
+              ! CCH: each channel uses different cloud predictor (defined based on cloudy_radiance_info*.txt)
+              do i=1,nchanl
+
+                 select case (trim(radmod%cld_pred(i)))
+                    case ('clw')
+                       ! determine whether to use CLW(TB w/ BC) or CLW(TB w/o BC) to determine VarBC data control
+                       if (io_use_bc_clw_for_cloud_mismatch) then ! use bias corrected TB for CLW for VarBC data control; 
+                                                                  ! not recommended if including cloud-dependent BC
+                          cld_pred_varbc_model(i) = clw_guess_retrieval
+                          cld_pred_varbc_obs(i)   = clw_obs
+                          cld_pred_varbc_use(i)   = half*(clw_guess_retrieval + clw_obs) ! use symmetric cloud
+                       else
+                          cld_pred_varbc_model(i) = clw_guess_retrieval_nobc
+                          cld_pred_varbc_obs(i)   = clw_obs
+                          cld_pred_varbc_use(i)   = half*(clw_guess_retrieval_nobc + clw_obs) ! use symmetric cloud
+                       endif
+
+                    case ('ch3')
+                       cld_pred_varbc_model(i) = cld_ch3_model
+                       cld_pred_varbc_obs(i)   = cld_ch3_obs
+                       cld_pred_varbc_use(i)   = half*(cld_ch3_model + cld_ch3_obs) ! use symmetric cloud
+
+                    case ('si1617')
+                       cld_pred_varbc_model(i) = SI_ch16_ch17_model
+                       cld_pred_varbc_obs(i)   = SI_ch16_ch17_obs
+                       cld_pred_varbc_use(i)   = abs(half*(SI_ch16_ch17_model + SI_ch16_ch17_obs)) ! use symmetric cloud
+
+                 end select
+              enddo
+
+              ! if including cloud predictors in VarBC:
               if ( io_cld_pred_in_varbc ) then
-
                  ! cloud predictors can be added to all of the all-sky channels, or subset of channels, defined below:
                  if ( trim(cld_varbc_chs) == 'low_peaking' ) then
                     cld_varbc_chs_amsua = (/1,2,3,4,15, -99/)
@@ -1450,38 +1484,6 @@ contains
                     cld_varbc_chs_amsua = (/1,2,3,4,5,15/)
                     cld_varbc_chs_atms  = (/1,2,3,4,5,6,16,17,18,19,20,21,22/)
                  endif
-
-                 ! define which cloud proxy to use (i.e., symmetric, clw, etc)
-                 select case (trim(type_cld_pred_varbc))
-                    case ('sym_clw')
-                       if (mype==0) write(6,*) "CCH -- in setuprad:: Cloud proxy = symmetric CLW (nobc)" 
-                       do i=1,nchanl
-                          cld_pred_varbc_model(i) = clw_guess_retrieval_nobc
-                          cld_pred_varbc_obs(i)   = clw_obs
-                          cld_pred_varbc_use(i)   = 0.5*(clw_guess_retrieval_nobc + clw_obs)
-                       enddo
-                    case ('sym_ch3')
-                       if (mype==0) write(6,*) "CCH -- in setuprad:: Cloud proxy = ch3 cloud effect"
-                       do i=1,nchanl
-                          cld_pred_varbc_model(i) = cld_ch3_model
-                          cld_pred_varbc_obs(i)   = cld_ch3_obs
-                          cld_pred_varbc_use(i)   = 0.5*(cld_ch3_model + cld_ch3_obs)
-                       enddo
-                    case ('sym_lwp_si')
-                       if (mype==0) write(6,*) "CCH -- in setuprad:: Cloud proxy = SI + LWP"
-                       do i=1,nchanl
-                          cld_pred_varbc_model(i) = cld_LWP_SI_model
-                          cld_pred_varbc_obs(i)   = cld_LWP_SI_obs
-                          cld_pred_varbc_use(i)   = 0.5*(cld_LWP_SI_model + cld_LWP_SI_obs)
-                       enddo
-                    case ('sym_ch_depend')
-                       if (mype==0) write(6,*) "CCH -- in setuprad:: Cloud proxy = channel-dependent cloud effect"
-                       do i=1,nchanl
-                          cld_pred_varbc_model(i) = cldeff_fg(i)
-                          cld_pred_varbc_obs(i)   = cldeff_obs(i)
-                          cld_pred_varbc_use(i)   = 0.5*(cldeff_obs(i) + cldeff_fg(i))
-                       enddo
-                 end select
 
                  ! define the functional form (i.e., polynomial, piecewise-tent-function, etc)
                  do i=1,nchanl
@@ -1496,13 +1498,13 @@ contains
                              do pp = 1,7
                                 xc = 0.1*pp ! center
                                 if (pp==7) then
-                                   xl = xc-0.1 
+                                   xl = xc-0.1
                                    xr = 1000.0 ! an arbitrary "large" number is fine (so the right part almost looks like a flat line)
                                 else
                                    xl = xc - 0.1
                                    xr = xc + 0.1
                                 endif
-                                pred(8+pp,i) = tent_predictor(cld_pred_varbc_use(i), xl, xc, xr) 
+                                pred(8+pp,i) = tent_predictor(cld_pred_varbc_use(i), xl, xc, xr)
 
                                 ! additional cloud predictor bias correction on O-B
                                 tbc(i)     = tbc(i) - pred(8+pp,i)*predchan(8+pp,i)
@@ -1526,21 +1528,14 @@ contains
 
                     endif ! cld_varbc_chs_amsua or cld_varbc_chs_atms
                  enddo ! nchanl
-
-              else ! io_cld_pred_in_varbc (if not adding cloud predictors into VarBC)
-                   ! these cloud predictors are still needed for 
-                   ! (1) define model & observation cloud proxy for VarBC data control
-                   ! (2) for symmetric cloud obs error variance assignment
-                 if (mype==0) write(6,*) "CCH -- in setuprad:: Cloud proxy = symmetric CLW (with bc); no cloud predictors in VarBC"
-                 do i=1,nchanl
-                    cld_pred_varbc_model(i) = clw_guess_retrieval
-                    cld_pred_varbc_obs(i)   = clw_obs
-                    cld_pred_varbc_use(i)   = 0.5*(clw_guess_retrieval+clw_obs)
-                 enddo
               endif ! io_cld_pred_in_varbc (adding cloud predictors or not into VarBC)
 
            endif ! atms or amsua
 
+           if(gmi) then
+              call gmi_37pol_diff(tsim(6),tsim(7),tsim_clr(6),tsim_clr(7),clw_guess_retrieval,ierrret)
+              call gmi_37pol_diff(tb_obs(6),tb_obs(7),tsim_clr(6),tsim_clr(7),clw_obs,ierrret)
+           end if
 
            if (radmod%ex_obserr=='ex_obserr1') then
 
@@ -1554,15 +1549,14 @@ contains
               !                         clw_guess_retrieval,clw_obs,cld_rbc_idx,ierrret)
 
               ! determine whether to use CLW(TB w/ BC) or CLW(TB w/o BC) to determine VarBC data control
-              if (io_use_bc_clw_for_cloud_mismatch) then ! use bias corrected TB for CLW for VarBC data control; 
-                                                         ! not recommended if including cloud-dependent BC
-                 ! update the bias-corrected CLW (including cloud predictor):
-                 call ret_amsua(tsim_bc,nchanl,tsavg5,zasat,clw_guess_retrieval,ierrret)
-                 do i=1,nchanl
-                    cld_pred_varbc_model(i) = clw_guess_retrieval
-                 enddo
-              endif
-
+              !if (io_use_bc_clw_for_cloud_mismatch) then ! use bias corrected TB for CLW for VarBC data control; 
+              !                                           ! not recommended if including cloud-dependent BC
+              !   ! update the bias-corrected CLW (including cloud predictor):
+              !   call ret_amsua(tsim_bc,nchanl,tsavg5,zasat,clw_guess_retrieval,ierrret)
+              !   do i=1,nchanl
+              !      cld_pred_varbc_model(i) = clw_guess_retrieval
+              !   enddo
+              !endif
               call radiance_ex_biascor(radmod,nchanl,cld_pred_varbc_model,cld_pred_varbc_obs, &
                                        cld_rbc_idx,cld_rbc_idx_varbc,ierrret)
 
@@ -1631,12 +1625,15 @@ contains
            if (radmod%ex_obserr=='ex_obserr1') then
               ! CCH: modify below to enable more generic choice of cloud predictors:
               !call radiance_ex_obserr(radmod,nchanl,clw_obs,clw_guess_retrieval,tnoise,tnoise_cld,error0)
-
-              call radiance_ex_obserr(radmod,nchanl,cld_pred_varbc_obs,cld_pred_varbc_model,tnoise,tnoise_cld,error0)
-              error_sym_cld = error0 ! a copy of symmetric cloud error
+              do i=1,nchanl
+                 if (radmod%lcloud4crtm(i)<0) cycle
+                 call radiance_ex_obserr(cld_pred_varbc_use(i),radmod%cclr(i),radmod%ccld(i),tnoise(i),tnoise_cld(i),error0(i))
+                 error_sym_cld(i) = error0(i) ! a copy of symmetric cloud error
+              enddo
 
            else if (radmod%ex_obserr=='ex_obserr3') then
               call radiance_ex_obserr_gmi(radmod,nchanl,clw_obs,clw_guess_retrieval,tnoise,tnoise_cld,error0) 
+
            end if
         end if
 
@@ -3058,11 +3055,15 @@ contains
                     call nc_diag_metadata_to_single("Cloud_Proxy_LWP_SI_Model",cld_LWP_SI_model)   ! cloud proxy (LWP+SI) from model
 
                     ! record the scattering indices
-                    call nc_diag_metadata_to_single("SI_CH1_CH15_Obs",      SI_ch1_ch15_obs)   ! scattering index (ch16,17)from observation
-                    call nc_diag_metadata_to_single("SI_CH1_CH15_Model",  SI_ch1_ch15_model)   ! scattering index (ch16,17)from model
+                    call nc_diag_metadata_to_single("SI_CH1_CH15_Obs",      SI_ch1_ch15_obs)   ! scattering index (ch1,15) from observation
+                    call nc_diag_metadata_to_single("SI_CH1_CH15_Model",  SI_ch1_ch15_model)   ! scattering index (ch1,15) from model
+
+                    call nc_diag_metadata_to_single("SI_CH1_CH2_CH15_Obs",      SI_ch1_ch2_ch15_obs)   ! scattering index (ch1,2,15) from observation
+                    call nc_diag_metadata_to_single("SI_CH1_CH2_CH15_Model",  SI_ch1_ch2_ch15_model)   ! scattering index (ch1,2,15) from model
+
                     if (atms) then
-                       call nc_diag_metadata_to_single("SI_CH16_CH17_Obs",      SI_ch16_ch17_obs)   ! scattering index (ch16,17)from observation
-                       call nc_diag_metadata_to_single("SI_CH16_CH17_Model",  SI_ch16_ch17_model)   ! scattering index (ch16,17)from model
+                       call nc_diag_metadata_to_single("SI_CH16_CH17_Obs",      SI_ch16_ch17_obs)   ! scattering index (ch16,17) from observation
+                       call nc_diag_metadata_to_single("SI_CH16_CH17_Model",  SI_ch16_ch17_model)   ! scattering index (ch16,17) from model
                     endif
 
                  endif

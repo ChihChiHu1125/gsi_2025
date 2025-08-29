@@ -113,6 +113,7 @@ module radiance_mod
     real(r_kind),pointer,dimension(:) :: cclr    => NULL()
     real(r_kind),pointer,dimension(:) :: ccld    => NULL()
     real(r_kind),pointer,dimension(:) :: cldval1 => NULL()
+    character(len=20),pointer,dimension(:) :: cld_pred => NULL()    ! CCH: cloud predictor type for each channel
   end type rad_obs_type
 
   type(rad_obs_type),save,dimension(:),allocatable :: rad_type_info
@@ -541,9 +542,13 @@ contains
        allocate(rad_type_info(k)%cclr(rad_type_info(k)%nchannel)) 
        allocate(rad_type_info(k)%ccld(rad_type_info(k)%nchannel)) 
        allocate(rad_type_info(k)%cldval1(rad_type_info(k)%nchannel)) 
+       allocate(rad_type_info(k)%cld_pred(rad_type_info(k)%nchannel))   ! CCH: cloud predictor type
+
        rad_type_info(k)%cclr(:)=9999.9_r_kind
        rad_type_info(k)%ccld(:)=zero
        rad_type_info(k)%cldval1(:)=zero
+       rad_type_info(k)%cld_pred(:)='N/A'   ! CCH: cloud predictor type
+
 
     end do ! end total_rad_type
 
@@ -610,6 +615,7 @@ contains
           radmod%cclr => rad_type_info(i)%cclr
           radmod%ccld => rad_type_info(i)%ccld
           radmod%cldval1 => rad_type_info(i)%cldval1
+          radmod%cld_pred => rad_type_info(i)%cld_pred ! CCH: cloud predictor type
           radmod%lprecip = radmod%lcloud_fwd .and. rad_type_info(i)%lprecip 
 
           return
@@ -695,6 +701,8 @@ contains
        if(associated(rad_type_info(k)%cclr)) deallocate(rad_type_info(k)%cclr)
        if(associated(rad_type_info(k)%ccld)) deallocate(rad_type_info(k)%ccld)
        if(associated(rad_type_info(k)%cldval1)) deallocate(rad_type_info(k)%cldval1)
+       if(associated(rad_type_info(k)%cld_pred)) deallocate(rad_type_info(k)%cld_pred)
+
     end do
     if(allocated(rad_type_info)) deallocate(rad_type_info)
     if(allocated(aod_type_info)) deallocate(aod_type_info)
@@ -792,9 +800,13 @@ contains
 !            allocate space for entries from table, Obtain table contents
              tablename='obs_'//trim(obsname)
              if ( rad_type_info(i)%ex_obserr == 'ex_obserr3' ) then
-                call sensor_parameter_table(trim(tablename),lunin,rad_type_info(i)%nchannel,rad_type_info(i)%cclr,rad_type_info(i)%ccld,rad_type_info(i)%cldval1)
+                call sensor_parameter_table(trim(tablename),lunin,rad_type_info(i)%nchannel,rad_type_info(i)%cclr,rad_type_info(i)%ccld, &
+                                            cldval1=rad_type_info(i)%cldval1)
              else
-                call sensor_parameter_table(trim(tablename),lunin,rad_type_info(i)%nchannel,rad_type_info(i)%cclr,rad_type_info(i)%ccld)
+                ! CCH: modify the cloud table (to include a new column specifying cloud predictor)
+                !call sensor_parameter_table(trim(tablename),lunin,rad_type_info(i)%nchannel,rad_type_info(i)%cclr,rad_type_info(i)%ccld)
+                call sensor_parameter_table(trim(tablename),lunin,rad_type_info(i)%nchannel,rad_type_info(i)%cclr,rad_type_info(i)%ccld, &
+                                            cld_pred=rad_type_info(i)%cld_pred)
              endif
              exit
           end if
@@ -805,8 +817,9 @@ contains
     close(lunin)
   end subroutine radiance_parameter_cloudy_init
 
+! CCH: add reading cloud predictor:
+  subroutine sensor_parameter_table(filename,lunin,nchal,cclr,ccld,cldval1,cld_pred)
 
-  subroutine sensor_parameter_table(filename,lunin,nchal,cclr,ccld,cldval1)
 !$$$  subprogram documentation block
 !                .      .    .
 ! subprogram:    sensor_parameter_table
@@ -840,9 +853,11 @@ contains
     integer(i_kind) , intent(in) :: nchal
     real(r_kind)    , dimension(nchal), intent(inout) :: cclr,ccld
     real(r_kind)    , dimension(nchal), optional, intent(inout) :: cldval1
+    character(len=20), dimension(nchal), optional, intent(inout) :: cld_pred
 
     integer(i_kind) ii,ntot,nrows,ich0
     real(r_kind) cclr0,ccld0,cldval1_0
+    character(len=20) :: cld_pred0
     character(len=256),allocatable,dimension(:):: utable
     logical print_verbose
 
@@ -854,6 +869,11 @@ contains
     if ( present(cldval1) ) then
        cldval1(:)=zero
     endif
+
+    if ( present(cld_pred) ) then ! CCH: initialize cloud predictor
+       cld_pred(:) = 'clw'
+    endif
+
 
 !   Scan file for desired table first and get size of table
     call gettablesize(filename,lunin,ntot,nrows)
@@ -871,6 +891,9 @@ contains
        if (present(cldval1)) then
          read(utable(ii),*) ich0,cclr0,ccld0,cldval1_0
          cldval1(ich0)=cldval1_0
+       elseif (present(cld_pred)) then ! CCH: read cloud predictor type from table
+         read(utable(ii),*) ich0,cclr0,ccld0,cld_pred0
+         cld_pred(ich0)=cld_pred0
        else
          read(utable(ii),*) ich0,cclr0,ccld0
        endif
@@ -879,11 +902,17 @@ contains
     enddo
     deallocate(utable)
 
+    ! CCH: print values:
     if (print_verbose) then
        if (present(cldval1)) then
           write(6,*) 'sensor_parameter_table: ich  cclr  ccld  cldval1'
           do ii=1,nchal
              write(6,*) ii,cclr(ii),ccld(ii),cldval1(ii)
+          end do
+       elseif (present(cld_pred)) then ! CCH: sanity check for cloud predictor
+          write(6,*) 'CCH:: /radiance_mod.f90/ sensor_parameter_table: ich  cclr  ccld  cld_pred'
+          do ii=1,nchal
+             write(6,*) ii,cclr(ii),ccld(ii),cld_pred(ii)
           end do
        else
           write(6,*) 'sensor_parameter_table: ich  cclr  ccld'
@@ -1013,8 +1042,15 @@ contains
 
   end subroutine radiance_parameter_aerosol_init
 
-  subroutine radiance_ex_obserr_1(radmod,nchanl,clwp_amsua,clw_guess_retrieval, &
-                                tnoise,tnoise_cld,error0)
+! CCH: 
+! modify the input/output of the subroutine
+! this subroutine now only evaluates the "piecewise-linear fit" function
+! (1) input: cloud predictors (move the calculation of symmetric cloud to setuprad.f90)
+!     output: obs error stdev
+! (2) this will be called one channel at a time;
+!     (originally, the stdev of all channels will be calculated all at once)
+
+  subroutine radiance_ex_obserr_1(cld_pred,cclr,ccld,tnoise,tnoise_cld,error0)
 !$$$  subprogram documentation block
 !                .      .    .
 ! subprogram:    radiance_ex_obserr_1
@@ -1039,33 +1075,18 @@ contains
     use kinds, only: i_kind,r_kind
     implicit none
     
-    integer(i_kind),intent(in) :: nchanl
-    real(r_kind),intent(in) :: clwp_amsua,clw_guess_retrieval
-    real(r_kind),dimension(nchanl),intent(in):: tnoise,tnoise_cld
-    real(r_kind),dimension(nchanl),intent(inout) :: error0
-    type(rad_obs_type),intent(in) :: radmod 
+    real(r_kind),intent(in) :: cld_pred, cclr, ccld, tnoise, tnoise_cld
+    real(r_kind),intent(inout) :: error0
 
-    integer(i_kind) :: i
-    real(r_kind) :: clwtmp
-    real(r_kind),dimension(nchanl) :: cclr,ccld
+    if(cld_pred <= cclr) then
+       error0 = tnoise
+    else if( cld_pred > cclr .and. cld_pred < ccld ) then
+       error0 = tnoise + (cld_pred - cclr)* &
+                         (tnoise_cld-tnoise)/(ccld-cclr)
+    else
+       error0 = tnoise_cld
+    endif
 
-    do i=1,nchanl
-       cclr(i)=radmod%cclr(i)
-       ccld(i)=radmod%ccld(i)
-    end do
-
-    do i=1,nchanl
-       if (radmod%lcloud4crtm(i)<0) cycle
-       clwtmp=half*(clwp_amsua+clw_guess_retrieval)
-       if(clwtmp <= cclr(i)) then
-          error0(i) = tnoise(i)
-       else if(clwtmp > cclr(i) .and. clwtmp < ccld(i)) then
-          error0(i) = tnoise(i) + (clwtmp-cclr(i))* &
-                      (tnoise_cld(i)-tnoise(i))/(ccld(i)-cclr(i))
-       else
-          error0(i) = tnoise_cld(i)
-       endif
-    end do
     return
 
   end subroutine radiance_ex_obserr_1
