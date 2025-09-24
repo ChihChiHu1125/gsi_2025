@@ -53,6 +53,10 @@ module radiance_mod
   public :: radiance_ex_obserr_gmi 
   public :: radiance_ex_biascor
   public :: radiance_ex_biascor_gmi
+! CCH:
+  public :: radiance_ex_obserr_non_Gaussian
+  public :: read_non_Gaussian_table
+  public :: interpolate
 
   public :: icloud_fwd,icloud_cv,iallsky,cw_cv,ql_cv
   public :: n_actual_clouds,n_clouds_fwd,n_clouds_jac
@@ -113,7 +117,8 @@ module radiance_mod
     real(r_kind),pointer,dimension(:) :: cclr    => NULL()
     real(r_kind),pointer,dimension(:) :: ccld    => NULL()
     real(r_kind),pointer,dimension(:) :: cldval1 => NULL()
-    character(len=20),pointer,dimension(:) :: cld_pred => NULL()    ! CCH: cloud predictor type for each channel
+    character(len=20),pointer,dimension(:) :: cld_pred => NULL()                   ! CCH: cloud predictor type for each channel
+    real(r_kind),pointer,dimension(:)      :: cld_diff_varbc_constraint => NULL()  ! CCH: VarBC cloud diff constraint
   end type rad_obs_type
 
   type(rad_obs_type),save,dimension(:),allocatable :: rad_type_info
@@ -542,13 +547,14 @@ contains
        allocate(rad_type_info(k)%cclr(rad_type_info(k)%nchannel)) 
        allocate(rad_type_info(k)%ccld(rad_type_info(k)%nchannel)) 
        allocate(rad_type_info(k)%cldval1(rad_type_info(k)%nchannel)) 
-       allocate(rad_type_info(k)%cld_pred(rad_type_info(k)%nchannel))   ! CCH: cloud predictor type
+       allocate(rad_type_info(k)%cld_pred(rad_type_info(k)%nchannel))                  ! CCH: cloud predictor type
+       allocate(rad_type_info(k)%cld_diff_varbc_constraint(rad_type_info(k)%nchannel)) ! CCH: VarBC cloud diff constraint
 
        rad_type_info(k)%cclr(:)=9999.9_r_kind
        rad_type_info(k)%ccld(:)=zero
        rad_type_info(k)%cldval1(:)=zero
-       rad_type_info(k)%cld_pred(:)='N/A'   ! CCH: cloud predictor type
-
+       rad_type_info(k)%cld_pred(:)='clw'                          ! CCH: (default) cloud predictor type
+       rad_type_info(k)%cld_diff_varbc_constraint(:)=0.05_r_kind   ! CCH: (default) cloud diff constraint
 
     end do ! end total_rad_type
 
@@ -615,7 +621,8 @@ contains
           radmod%cclr => rad_type_info(i)%cclr
           radmod%ccld => rad_type_info(i)%ccld
           radmod%cldval1 => rad_type_info(i)%cldval1
-          radmod%cld_pred => rad_type_info(i)%cld_pred ! CCH: cloud predictor type
+          radmod%cld_pred => rad_type_info(i)%cld_pred                                       ! CCH: cloud predictor type
+          radmod%cld_diff_varbc_constraint => rad_type_info(i)%cld_diff_varbc_constraint     ! CCH: cloud diff VarBC constraint
           radmod%lprecip = radmod%lcloud_fwd .and. rad_type_info(i)%lprecip 
 
           return
@@ -702,6 +709,7 @@ contains
        if(associated(rad_type_info(k)%ccld)) deallocate(rad_type_info(k)%ccld)
        if(associated(rad_type_info(k)%cldval1)) deallocate(rad_type_info(k)%cldval1)
        if(associated(rad_type_info(k)%cld_pred)) deallocate(rad_type_info(k)%cld_pred)
+       if(associated(rad_type_info(k)%cld_diff_varbc_constraint)) deallocate(rad_type_info(k)%cld_diff_varbc_constraint)
 
     end do
     if(allocated(rad_type_info)) deallocate(rad_type_info)
@@ -803,10 +811,10 @@ contains
                 call sensor_parameter_table(trim(tablename),lunin,rad_type_info(i)%nchannel,rad_type_info(i)%cclr,rad_type_info(i)%ccld, &
                                             cldval1=rad_type_info(i)%cldval1)
              else
-                ! CCH: modify the cloud table (to include a new column specifying cloud predictor)
+                ! CCH: modified cloud table (including new columns specifying cloud predictor, and constraint criteria for each channel)
                 !call sensor_parameter_table(trim(tablename),lunin,rad_type_info(i)%nchannel,rad_type_info(i)%cclr,rad_type_info(i)%ccld)
                 call sensor_parameter_table(trim(tablename),lunin,rad_type_info(i)%nchannel,rad_type_info(i)%cclr,rad_type_info(i)%ccld, &
-                                            cld_pred=rad_type_info(i)%cld_pred)
+                                            cld_pred=rad_type_info(i)%cld_pred, cld_diff_varbc_constraint=rad_type_info(i)%cld_diff_varbc_constraint)
              endif
              exit
           end if
@@ -818,7 +826,7 @@ contains
   end subroutine radiance_parameter_cloudy_init
 
 ! CCH: add reading cloud predictor:
-  subroutine sensor_parameter_table(filename,lunin,nchal,cclr,ccld,cldval1,cld_pred)
+  subroutine sensor_parameter_table(filename,lunin,nchal,cclr,ccld,cldval1,cld_pred,cld_diff_varbc_constraint)
 
 !$$$  subprogram documentation block
 !                .      .    .
@@ -854,9 +862,10 @@ contains
     real(r_kind)    , dimension(nchal), intent(inout) :: cclr,ccld
     real(r_kind)    , dimension(nchal), optional, intent(inout) :: cldval1
     character(len=20), dimension(nchal), optional, intent(inout) :: cld_pred
+    real(r_kind)     , dimension(nchal), optional, intent(inout) :: cld_diff_varbc_constraint
 
     integer(i_kind) ii,ntot,nrows,ich0
-    real(r_kind) cclr0,ccld0,cldval1_0
+    real(r_kind) cclr0,ccld0,cldval1_0,cld_diff_varbc_constraint0
     character(len=20) :: cld_pred0
     character(len=256),allocatable,dimension(:):: utable
     logical print_verbose
@@ -870,8 +879,12 @@ contains
        cldval1(:)=zero
     endif
 
-    if ( present(cld_pred) ) then ! CCH: initialize cloud predictor
+    if ( present(cld_pred) ) then ! CCH: (default) cloud predictor
        cld_pred(:) = 'clw'
+    endif
+
+    if ( present(cld_diff_varbc_constraint) ) then ! CCH: (default) VarBC cloud diff constraint
+       cld_diff_varbc_constraint(:) = 0.05_r_kind
     endif
 
 
@@ -892,8 +905,9 @@ contains
          read(utable(ii),*) ich0,cclr0,ccld0,cldval1_0
          cldval1(ich0)=cldval1_0
        elseif (present(cld_pred)) then ! CCH: read cloud predictor type from table
-         read(utable(ii),*) ich0,cclr0,ccld0,cld_pred0
+         read(utable(ii),*) ich0,cclr0,ccld0,cld_pred0,cld_diff_varbc_constraint0
          cld_pred(ich0)=cld_pred0
+         cld_diff_varbc_constraint(ich0)=cld_diff_varbc_constraint0
        else
          read(utable(ii),*) ich0,cclr0,ccld0
        endif
@@ -910,9 +924,9 @@ contains
              write(6,*) ii,cclr(ii),ccld(ii),cldval1(ii)
           end do
        elseif (present(cld_pred)) then ! CCH: sanity check for cloud predictor
-          write(6,*) 'CCH:: /radiance_mod.f90/ sensor_parameter_table: ich  cclr  ccld  cld_pred'
+          write(6,*) 'CCH:: /radiance_mod.f90/ sensor_parameter_table: ich  cclr  ccld  cld_pred cld_diff_constraint'
           do ii=1,nchal
-             write(6,*) ii,cclr(ii),ccld(ii),cld_pred(ii)
+             write(6,*) ii,cclr(ii),ccld(ii),cld_pred(ii),cld_diff_varbc_constraint(ii)
           end do
        else
           write(6,*) 'sensor_parameter_table: ich  cclr  ccld'
@@ -1257,6 +1271,13 @@ contains
                 cld_rbc_idx_varbc(i)=cld_rbc_idx(i)
              endif
 
+          case ('cld_diff_constraint')
+             ! do not separate the data into clear/cloudy group
+             ! use the data where the cloud amount difference is small
+             if ( abs(cld_pred_obs(i)-cld_pred_model(i)) > radmod%cld_diff_varbc_constraint(i) ) then
+                cld_rbc_idx_varbc(i)=zero
+             endif
+
           case default
              cld_rbc_idx_varbc(i)=cld_rbc_idx(i)
        end select
@@ -1422,6 +1443,338 @@ contains
 
 !  end subroutine radiance_ex_biascor_3
   end subroutine radiance_ex_biascor_gmi
+
+
+ ! CCH:
+ ! non-Gaussian error:
+  subroutine radiance_ex_obserr_non_Gaussian(radmod, chan_number, io_cloud_bc, &
+                                             omf_query, cld_pred_query, stdev_ret)
+  !$$$  subprogram documentation block
+  !                .      .    .
+  ! subprogram:    radiance_ex_obserr_non_Gaussian
+  !
+  !   prgrmmr:    Chih-Chi Hu                  date: 2025-09-11
+  !
+  ! abstract:  This routine reads the pre-built non-Gaussian error table
+  !            and interpolate the stdev inquired from the table to assign obs error stdev 
+  !
+  ! program history log:
+  !
+  !   input argument list:
+  !      radmod      = the radiance object ( check: %rtype = sensor name, e.g.,amsua )
+  !      chan_number = which channel (this subroutine applies one channel at a time)
+  !      io_cloud_bc = whether additional bias correction (recommend = False)
+  !      omf_query      = (input) omf value
+  !      cld_pred_query = (input) cloud predictor value 
+  !
+  !   output argument list:
+  !      stdev_ret      = (output) interpolated error stdev
+  !
+  ! attributes:
+  !   language: f90
+  !   machine: 
+  !
+  !$$$ end documentation block
+
+    use kinds, only: i_kind,r_kind
+    implicit none
+
+    type(rad_obs_type),intent(in)  :: radmod
+    integer(i_kind), intent(in)    :: chan_number ! which channel are we working on 
+    logical, intent(in)            :: io_cloud_bc
+    real(r_kind),    intent(inout) :: omf_query   ! O-F innovation
+                                                  ! if io_cloud_bc == .true. ,
+                                                  ! innovation will be changed
+    real(r_kind),    intent(in)    :: cld_pred_query ! cloud predictor value
+    real(r_kind),    intent(out)   :: stdev_ret   ! retrieved (interpolated) stdev from table
+
+    integer(i_kind) :: i, unit_number, fstatus
+    character(len=10)  :: chan_number_string
+    character(len=256) :: ng_table_name
+    character(len=1200) :: line, abs_path
+
+    integer(i_kind) :: num_cloud_cat, num_hist_pdf
+    real(r_kind)    :: max_range, dx, bdy_slope
+    real(r_kind), dimension(:),   allocatable :: cloud_bin, bin_center, bias
+    real(r_kind), dimension(:,:), allocatable :: stdev
+
+    integer(i_kind) :: cld_cat_low, cld_cat_upp 
+    real(r_kind)    :: omf_mode_rel_low, omf_mode_rel_upp, stdev_low, stdev_upp
+    integer(i_kind) :: ndx_left, ndx_right
+    real(r_kind)    :: omf_left, omf_right
+    real(r_kind)    :: cld_pred_tmp, dTB, bias_interp
+
+
+    write(chan_number_string, '(I0)') chan_number
+    ng_table_name ='ng_'//trim(radmod%rtype)//'_ch'//trim(chan_number_string)//'.txt'
+
+    ! read the non-Gaussian table:
+    call read_non_Gaussian_table(ng_table_name, max_range, dx, bdy_slope, &
+                                 num_cloud_cat, num_hist_pdf, cloud_bin,  &
+                                 bias, stdev )
+
+    ! check if the table is read in properly:
+    !write(6,*) '=== start of read_and_output.F90 ==='
+    !write(6,*) '#   summary of read info:   '
+    !write(6,*) trim(ng_table_name)
+    !write(6,*) ''
+    !write(6,'(A, f8.2)') 'max_range     = ', max_range
+    !write(6,'(A, f8.2)') 'dx            = ', dx
+    !write(6,'(A, f8.2)') 'bdy_slope     = ', bdy_slope
+    !write(6,'(A, I4)') 'num_cloud_cat = ', num_cloud_cat
+    !write(6,'(A, I4)') 'num_hist_pdf  = ', num_hist_pdf
+    !write(6,'(A, *(f8.2))') 'cloud bin     = ', cloud_bin
+    !write(6,'(A, *(f8.2))') 'bias          = ', bias
+    !do i=1,num_cloud_cat
+    !   write(6,'(A, I2, A, *(F8.2))') 'stdev (cloud cat',i,') = ', stdev(i,:)
+    !enddo
+    !write(6,*) ''
+    !write(6,*) '=== end of read_and_output.F90 ==='
+
+    ! modify the cloud predictor value if it is out of the range
+    cld_pred_tmp = cld_pred_query
+    if (cld_pred_tmp > cloud_bin(num_cloud_cat+1)) cld_pred_tmp = cloud_bin(num_cloud_cat+1)
+    if (cld_pred_tmp < cloud_bin(1)              ) cld_pred_tmp = cloud_bin(1)
+
+    ! define the bin center:
+    ! Note the estimated discretized cloud-dependent pdfs are assumed
+    ! to be defined on the bin center
+    allocate(bin_center(num_cloud_cat))
+    do i=1,num_cloud_cat
+       bin_center(i) = 0.5*( cloud_bin(i) + cloud_bin(i+1) )
+    enddo
+
+    ! determine which cloud cat cld_pred_tmp falls into
+    ! i.e., cld_pred_tmp is in [lower_cld_cat, upper_cld_cat]
+    if ( cld_pred_tmp <= bin_center(1) ) then ! if in the smallest category
+       cld_cat_low = 1
+       cld_cat_upp = 1
+    elseif ( cld_pred_tmp >= bin_center(num_cloud_cat) ) then ! if in the largest category
+       cld_cat_low = num_cloud_cat
+       cld_cat_upp = num_cloud_cat
+    else
+       do i=2,num_cloud_cat
+          if ( cld_pred_tmp < bin_center(i) ) then
+             cld_cat_low = i-1
+             cld_cat_upp = i
+             exit
+          endif
+       enddo
+    endif
+
+    ! interpolation:
+    ! (1) interpolate the innovation in the lower and upper cloud cat, respectively
+    !     so we get two different stdevs
+    ! (2) interpolate the cld cat based on the bin center
+
+    ! (1) lower cloud cat:
+    ! move the innovation to the 'mode-relative coordinate'
+    ! Note: this is assuming all the biases in O-B pdfs are attributed to 
+    !       the background error
+    omf_mode_rel_low = omf_query
+    if ( .not. io_cloud_bc ) omf_mode_rel_low = omf_mode_rel_low + bias(cld_cat_low)
+
+    ! find the stdev based on the cloud category
+    if (omf_mode_rel_low >= max_range ) then
+       dTB = omf_mode_rel_low - max_range
+       stdev_low = stdev(cld_cat_low,num_hist_pdf) + bdy_slope*dTB !extrapolation
+    elseif (omf_mode_rel_low <= -max_range ) then
+       dTB = -max_range - omf_mode_rel_low
+       stdev_low = stdev(cld_cat_low, 1) + bdy_slope*dTB ! extrapolation
+    else
+       ! if O-F is within [-max_range, max_range]
+       ! interpolate from the table to get the stdev:
+       ndx_left  = floor( (omf_mode_rel_low - (-max_range))/dx ) ! ndx = how many dx
+       ndx_right = ndx_left + 1
+
+       omf_left  = -max_range + dx*(ndx_left )
+       omf_right = -max_range + dx*(ndx_right)
+
+       call interpolate(omf_left,  stdev(cld_cat_low, ndx_left+1), &
+                        omf_right, stdev(cld_cat_low, ndx_right+1), &
+                        omf_mode_rel_low, stdev_low )
+   endif
+
+    ! (2) upper cloud cat:
+    ! move the innovation to the 'mode-relative coordinate'
+    ! Note: this is assuming all the biases in O-B pdfs are attributed to 
+    !       the background error
+    omf_mode_rel_upp = omf_query
+    if ( .not. io_cloud_bc ) omf_mode_rel_upp = omf_mode_rel_upp + bias(cld_cat_upp)
+
+    ! find the stdev based on the cloud category
+    if (omf_mode_rel_upp >= max_range ) then
+       dTB = omf_mode_rel_upp - max_range
+       stdev_upp = stdev(cld_cat_upp,num_hist_pdf) + bdy_slope*dTB !extrapolation
+    elseif (omf_mode_rel_upp <= -max_range ) then
+       dTB = -max_range - omf_mode_rel_upp
+       stdev_upp = stdev(cld_cat_upp, 1) + bdy_slope*dTB ! extrapolation
+    else
+       ! if innovation is within [-max_range, max_range]
+       ! interpolate from the table to get the stdev:
+       ndx_left  = floor( (omf_mode_rel_upp - (-max_range))/dx ) ! ndx = how many dx
+       ndx_right = ndx_left + 1
+
+       omf_left  = -max_range + dx*(ndx_left )
+       omf_right = -max_range + dx*(ndx_right)
+
+       call interpolate(omf_left,  stdev(cld_cat_upp, ndx_left+1), &
+                        omf_right, stdev(cld_cat_upp, ndx_right+1), &
+                        omf_mode_rel_upp, stdev_upp )
+    endif
+
+    ! === interpolate the lower and upper cat ===
+    call interpolate(bin_center(cld_cat_low), stdev_low, &
+                     bin_center(cld_cat_upp), stdev_upp, &
+                     cld_pred_tmp, stdev_ret )
+
+    if (io_cloud_bc) then
+        call interpolate(bin_center(cld_cat_low), bias(cld_cat_low), &
+                         bin_center(cld_cat_upp), bias(cld_cat_upp), &
+                         cld_pred_tmp, bias_interp )
+        omf_query = omf_query - bias_interp
+    endif
+
+
+    return
+
+  end subroutine radiance_ex_obserr_non_Gaussian
+
+
+  subroutine read_non_Gaussian_table(filename, max_range, dx, bdy_slope, &
+                                     num_cloud_cat, num_hist_pdf, cloud_bin, &
+                                     bias, stdev)
+  ! CCH: 2025/09/11
+  ! the subroutine the read the non-Gaussian table
+
+   implicit none
+
+   character(len=*), intent(in) :: filename
+   real(r_kind), intent(out)    :: max_range, dx, bdy_slope
+   integer(i_kind), intent(out) :: num_cloud_cat, num_hist_pdf
+   real(r_kind), dimension(:), allocatable, intent(out)   :: cloud_bin, bias
+   real(r_kind), dimension(:,:), allocatable, intent(out) :: stdev
+
+
+   character(len=1200) :: line
+   character(len=256), dimension(2) :: title
+   integer(i_kind) :: unit_number, status, i, n, num_chars_read
+   real(r_kind)    :: cri_costfn
+   character(len=200) :: chan_number_string, ng_table_name
+
+   !write(chan_number_string, '(I0)') 15
+   !ng_table_name ='non_Gaussian_table_amsua_ch'//adjustl(trim(chan_number_string))//'.txt'
+   !write(*,*) ng_table_name
+
+  ! Open the file for reading
+  open(newunit=unit_number, file=filename, status='old',action='read',iostat=status)
+
+  if (status /= 0) then
+    write(6,*) 'In radiance_mod.f90/read_nongauss table :: Error opening file ', filename
+    stop
+  end if
+
+ ! Read the parameter block
+
+  n=1 ! index for the line number of the title
+
+  do
+
+    read(unit_number, '(A)', iostat=status) line
+
+    if (status /= 0) exit
+
+    if(trim(line)=='') cycle ! advance empty line
+
+    if(index(line,trim('nonGaussian observation error table::')) /= 0) then !table
+
+       do ! start read table
+          read(unit_number, '(A)', iostat=status) line  ! read the next line
+
+          if (line(1:1)=='!') cycle ! skip the comments
+          if (line(1:1)==':') exit  ! end of the table
+
+          if(index(line(1:1),'#') /= 0) then
+             title(n) = line
+             n=n+1
+             cycle
+          endif
+
+          if(index(line(1:15),'max_range') /= 0) then
+             num_chars_read = index(line, '=') + 1
+             read(line(num_chars_read:),*) max_range
+             cycle
+          elseif(index(line(1:15),'dx') /= 0) then
+             num_chars_read = index(line, '=') + 1
+             read(line(num_chars_read:),*) dx
+             cycle
+          elseif(index(line(1:15),'bdy_slope') /= 0) then
+             num_chars_read = index(line, '=') + 1
+             read(line(num_chars_read:),*) bdy_slope
+             cycle
+          elseif(index(line(1:15),'cri_costfn') /= 0) then
+             num_chars_read = index(line, '=') + 1
+             read(line(num_chars_read:),*) cri_costfn
+             cycle
+          elseif(index(line(1:15),'num_cloud_cat') /= 0) then
+             num_chars_read = index(line, '=') + 1
+             read(line(num_chars_read:),*) num_cloud_cat
+             cycle
+          endif
+       enddo ! end read table
+
+    endif ! table
+
+    if(index(line,trim('cloud_bin::')) /= 0) then ! cloud bin
+       if(.not. allocated(cloud_bin)) allocate(cloud_bin(num_cloud_cat+1))
+       read(unit_number, '(A)', iostat=status) line  ! read the nextline
+       read(line, *) cloud_bin
+    endif ! cloud bin
+
+
+    if(index(line,trim('bias::')) /= 0) then ! bias
+       if(.not. allocated(bias)) allocate(bias(num_cloud_cat)  )
+       read(unit_number, '(A)', iostat=status) line  ! read the nextline
+       read(line, *) bias
+    endif ! bias
+
+
+    if(index(line,trim('stdev::')) /= 0) then ! stdev
+       num_hist_pdf = 2*int(max_range/dx)+1 ! number of discretized histograms for a pdf
+       if(.not. allocated(stdev)) allocate(stdev(num_cloud_cat, num_hist_pdf))
+
+       do i=1, num_cloud_cat
+          read(unit_number, '(A1200)', iostat=status) line  ! read the nextline
+          read(line, *) stdev(i,:)
+       enddo
+
+    endif ! stdev
+
+  end do
+
+
+  ! Close the file
+  close(unit_number)
+
+  end subroutine read_non_Gaussian_table
+
+  ! CCH: useful function
+  subroutine interpolate(x1,y1,x2,y2,x,y) 
+      use kinds, only: i_kind,r_kind
+      implicit none
+      real(r_kind), intent(in)  :: x1, y1, x2, y2, x
+      real(r_kind), intent(out) :: y
+
+      ! Check if x1 equals x2 to avoid division by zero
+      if (x1 == x2) then
+          y = y1
+      else
+          ! Perform linear interpolation
+          y = y1 + (y2 - y1) * (x - x1) / (x2 - x1)
+      end if
+
+  end subroutine interpolate
+
 
 
 end module radiance_mod

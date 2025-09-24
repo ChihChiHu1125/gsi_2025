@@ -250,10 +250,10 @@ contains
 ! CCH::
   use radinfo, only: io_use_bc_clw_for_cloud_mismatch, &
                      io_cld_pred_in_varbc, cld_varbc_chs, cld_pred_fn_varbc, &
-                     io_save_jacobian_cch
-
+                     io_save_jacobian_cch, io_scatter_assim, io_non_Gaussian_error
   use radiance_mod, only: n_clouds_jac,cloud_names_jac, &
-                          n_clouds_fwd,cloud_names_fwd
+                          n_clouds_fwd,cloud_names_fwd, &
+                          radiance_ex_obserr_non_Gaussian
 
   use gsi_nstcouplermod, only: nstinfo
   use read_diag, only: get_radiag,ireal_radiag,ipchan_radiag
@@ -429,7 +429,7 @@ contains
 
   ! cloud predictors in VarBC
   integer(i_kind) :: cld_varbc_chs_amsua(6), cld_varbc_chs_atms(13)
-  real(r_kind),dimension(nchanl) :: cld_pred_varbc_model, cld_pred_varbc_obs, cld_pred_varbc_use
+  real(r_kind),dimension(nchanl) :: cld_pred_varbc_model, cld_pred_varbc_obs, cld_pred_varbc_use, cld_bias_correction
 
   ! different definitions of cloud predictors
   real(r_kind)    :: cld_ch3_model, cld_ch3_obs
@@ -441,9 +441,11 @@ contains
   ! dummy variables for piecewise-tent function
   integer(i_kind) :: pp
   real(r_kind)    :: xl, xc, xr
+  real(r_kind)    :: cld_bin_bdy(9)
 
   ! to separate symmetric error & non-Gaussian error:
   real(r_kind),dimension(nchanl):: error0, error_sym_cld
+  real(r_kind) :: stdev_ret
 
   ! dummy variables to save Jacobian into netcdf:
   character(len=50):: cloud_type_name, netcdf_var_name
@@ -1366,7 +1368,7 @@ contains
 
 ! CCH::
 !       Compute retrieved microwave cloud liquid water and 
-!       assign (1) cld_rbc_idx          for SDOEI
+!       assign (1) cld_rbc_idx          for Situation-Dependent Observation Error Inflation (SDOEI, Zhu 2016)
 !              (2) cld_rbc_idx_varbc    for bias correction in allsky conditions
         cld_rbc_idx=one
         cld_rbc_idx2=zero
@@ -1487,6 +1489,9 @@ contains
 
                  ! define the functional form (i.e., polynomial, piecewise-tent-function, etc)
                  do i=1,nchanl
+
+                    cld_bias_correction(i)=0
+
                     if ( (ANY(cld_varbc_chs_amsua == i) .and. amsua) .or. &
                          (ANY(cld_varbc_chs_atms  == i) .and. atms ) ) then
 
@@ -1494,21 +1499,37 @@ contains
                        ! the functional form of cloud-dependent BC:  
                        select case (trim(cld_pred_fn_varbc)) ! select the form of the predictor  
 
-                          case ('tent') ! piecewise-tent function; as a preliminary test, use a hard coded xc = [0.1, 0.2, ..., 0.7]
-                             do pp = 1,7
-                                xc = 0.1*pp ! center
-                                if (pp==7) then
-                                   xl = xc-0.1
-                                   xr = 1000.0 ! an arbitrary "large" number is fine (so the right part almost looks like a flat line)
-                                else
-                                   xl = xc - 0.1
-                                   xr = xc + 0.1
-                                endif
-                                pred(8+pp,i) = tent_predictor(cld_pred_varbc_use(i), xl, xc, xr)
+                          !case ('tent') ! piecewise-tent function; as a preliminary test, use a hard coded xc = [0.1, 0.2, ..., 0.7]
+                          !   do pp = 1,7
+                          !      xc = 0.1*pp ! center
+                          !      if (pp==7) then
+                          !         xl = xc-0.1
+                          !         xr = 1000.0 ! an arbitrary "large" number is fine (so the right part almost looks like a flat line)
+                          !      else
+                          !         xl = xc - 0.1
+                          !         xr = xc + 0.1
+                          !      endif
+                          !      pred(8+pp,i) = tent_predictor(cld_pred_varbc_use(i), xl, xc, xr)
+                          !      cld_bias_correction(i) = cld_bias_correction(i) + pred(8+pp,i)*predchan(8+pp,i) 
+                          !   enddo
 
-                                ! additional cloud predictor bias correction on O-B
-                                tbc(i)     = tbc(i) - pred(8+pp,i)*predchan(8+pp,i)
-                                tsim_bc(i) = tsim_bc(i) + pred(8+pp,i)*predchan(8+pp,i)
+                          case ('tent')
+                             ! different cloud predictor have different range:
+                             select case (trim(radmod%cld_pred(i)))
+                                case ('clw')
+                                   cld_bin_bdy = (/0.0, 0.015, 0.040, 0.060, 0.10, 0.15, 0.25, 0.55, 1000.0/)
+                                case ('ch3')
+                                   cld_bin_bdy = (/0.0, 0.25, 0.80, 1.6, 3.2, 5.5, 8.5, 17.5, 1000.0/)
+                                case ('si1617')
+                                   cld_bin_bdy = (/0.0, 0.9, 1.8, 3.6, 7.2, 12.1, 18.4, 33.1, 1000.0/)
+                             end select 
+
+                             do pp = 1,7
+                                xl = cld_bin_bdy(pp)
+                                xc = cld_bin_bdy(pp+1)
+                                xr = cld_bin_bdy(pp+2)
+                                pred(8+pp,i) = tent_predictor(cld_pred_varbc_use(i), xl, xc, xr)
+                                cld_bias_correction(i) = cld_bias_correction(i) + pred(8+pp,i)*predchan(8+pp,i)
                              enddo
 
                           case ('4th_poly')  ! fourth order polynomial
@@ -1516,15 +1537,13 @@ contains
                              pred(10,i) = cld_pred_varbc_use(i)**2
                              pred(11,i) = cld_pred_varbc_use(i)**3
                              pred(12,i) = cld_pred_varbc_use(i)**4
-                             ! additional cloud predictor bias correction on O-B (B_bc=B+bc, so O-B_bc = O-B-bc)
-                             tbc(i)=tbc(i) - pred(9,i) *predchan(9,i)  - pred(10,i)*predchan(10,i) &
-                                           - pred(11,i)*predchan(11,i) - pred(12,i)*predchan(12,i)
-
-                             ! also bias correct tsim_bc:
-                             tsim_bc(i) = tsim_bc(i) + pred(9,i) *predchan(9,i)  + pred(10,i)*predchan(10,i) &
-                                                     + pred(11,i)*predchan(11,i) + pred(12,i)*predchan(12,i)
-
+                             cld_bias_correction(i) = cld_bias_correction(i)+pred(9,i)* predchan(9,i) +pred(10,i)*predchan(10,i) &
+                                                                            +pred(11,i)*predchan(11,i)+pred(12,i)*predchan(12,i)
                        end select ! cld_pred_fn_varbc
+
+                       ! apply the cloud-dependent bias correction on O-B and tsim_bc:
+                       tbc(i)     = tbc(i) - cld_bias_correction(i)
+                       tsim_bc(i) = tsim_bc(i) + cld_bias_correction(i)
 
                     endif ! cld_varbc_chs_amsua or cld_varbc_chs_atms
                  enddo ! nchanl
@@ -1630,6 +1649,17 @@ contains
                  call radiance_ex_obserr(cld_pred_varbc_use(i),radmod%cclr(i),radmod%ccld(i),tnoise(i),tnoise_cld(i),error0(i))
                  error_sym_cld(i) = error0(i) ! a copy of symmetric cloud error
               enddo
+
+              if (io_non_Gaussian_error) then
+                 do i=1,nchanl
+                    if ( (ANY(cld_varbc_chs_amsua == i) .and. amsua) .or. &
+                         (ANY(cld_varbc_chs_atms  == i) .and. atms ) ) then
+                       call radiance_ex_obserr_non_Gaussian(radmod=radmod, chan_number=i, io_cloud_bc=.false., &
+                                                            omf_query=tbc(i), cld_pred_query=cld_pred_varbc_use(i), stdev_ret=stdev_ret)
+                       error0(i) = stdev_ret ! overwrite error0 by non-Gaussian error
+                    endif
+                 enddo
+              endif
 
            else if (radmod%ex_obserr=='ex_obserr3') then
               call radiance_ex_obserr_gmi(radmod,nchanl,clw_obs,clw_guess_retrieval,tnoise,tnoise_cld,error0) 
@@ -1934,11 +1964,22 @@ contains
                        errf(i) = three*errf(i)
                     endif
                  else if(radmod%rtype == 'atms' .and. (i <= 6 .or. i>=16) ) then
-                    if (radmod%lprecip) then
-                       errf(i) = min(2.5_r_kind*errf(i),10.0_r_kind)
-                    else
-                       errf(i) = min(three*errf(i),10.0_r_kind)
+                 ! CCH: not sure if the 10K threshold is needed?
+                    if (io_scatter_assim) then ! if assimilate scatter-affected data, remove 10K cap limit
+                       if (radmod%lprecip) then
+                          errf(i) = 2.5_r_kind*errf(i)
+                       else
+                          errf(i) = three*errf(i)
+                       endif
+
+                    else                       ! otherwise use the default setup
+                       if (radmod%lprecip) then
+                          errf(i) = min(2.5_r_kind*errf(i),10.0_r_kind)
+                       else
+                          errf(i) = min(three*errf(i),10.0_r_kind)
+                       endif
                     endif
+
                  else if(radmod%rtype == 'gmi') then
                     errf(i) = min(2.0_r_kind*errf(i),ermax_rad(m))
                  else if (radmod%rtype/='amsua' .and. radmod%rtype/='atms' .and. radmod%rtype/='gmi' .and. radmod%lcloud4crtm(i)>=0) then
@@ -3042,7 +3083,11 @@ contains
                     ! record "original" observation errors (before SDOEI)
                     call nc_diag_metadata_to_single("Sym_Observation_Error",error_sym_cld(ich_diag(i)))  ! symmetric observation error
                     call nc_diag_metadata_to_single("Non_Gaussian_Error",   error0(ich_diag(i)))         ! non-Gaussian observation error
-                                                                                                         ! only meaningful if using non-Gaussian errors
+
+                    ! record the actual cloud proxy used for assigning obs error, varbc data control (and varbc cloud predictor)
+                    call nc_diag_metadata_to_single("Cloud_Proxy_Used",   cld_pred_varbc_use(ich_diag(i)))         ! actually used cloud proxy
+
+                    ! "Cloud_Proxy_Used" should be derived from one of the following, depending on the channel characteristics:
                     ! record the cloud effect (w/o any bias correction)
                     call nc_diag_metadata_to_single("Cloud_Effect_Obs",  cldeff_obs(ich_diag(i))) ! observation cloud effect w/o BC
                     call nc_diag_metadata_to_single("Cloud_Effect_Model",cldeff_fg(ich_diag(i)))  ! model cloud effect w/o BC
@@ -3175,6 +3220,15 @@ contains
                  call nc_diag_metadata_to_single("BC_Sine_Latitude",predbias(7,ich_diag(i))        )             ! sin(lat) bias correction term
                  call nc_diag_metadata_to_single("BC_Emissivity",predbias(8,ich_diag(i))        )             ! emissivity sensitivity bias correction term
                  call nc_diag_metadata_to_single("BC_Fixed_Scan_Position",predbias(npred+1,ich_diag(i))  )             ! external scan angle
+
+                 ! CCH: record cloud predictors:
+                 if (io_cld_pred_in_varbc) then
+                    if (amsua .or. atms) then
+                       call nc_diag_metadata_to_single("BC_Cloud_Pred_Contrib",cld_bias_correction(ich_diag(i))  )       ! sum of cloud predictor contribution term
+                    endif
+                 endif
+
+
                  if (lwrite_predterms) then
                     call nc_diag_metadata_to_single("BCPred_Constant",pred(1,ich_diag(i))        )             ! constant bias correction term
                     call nc_diag_metadata_to_single("BCPred_Scan_Angle",pred(2,ich_diag(i))        )             ! scan angle bias correction term

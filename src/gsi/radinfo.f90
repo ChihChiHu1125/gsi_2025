@@ -132,8 +132,8 @@ module radinfo
   ! VarBC cloud predictors:
   public :: io_cld_pred_in_varbc, cld_varbc_chs, cld_pred_fn_varbc
 
-  ! empirical inflation:
-  public :: io_empirical_inflation
+  ! empirical inflation and/or non-Gaussian error:
+  public :: io_empirical_inflation, io_non_Gaussian_error
 
   ! save Jacobian:
   public :: io_save_jacobian_cch
@@ -281,6 +281,9 @@ module radinfo
   ! empirical inflation:
   logical :: io_empirical_inflation           ! whether to use empirical inflation (Zhu et al 2016) for all-sky AMSUA/ATMS channels
 
+  ! non-Gaussian error:
+  logical :: io_non_Gaussian_error            ! whether to use non-Gaussian error for AMSU-A and ATMS channels
+
   ! save Jacobian:
   logical :: io_save_jacobian_cch             ! whether to save inner domain and Jacobians for AMSUA/ATMS
 
@@ -390,6 +393,10 @@ contains
                                              !                           obs=cloudy, model=cloudy with |obs-model|<=cld_cld_varbc_constraint
                                              ! clr_clr_and_cld_cld_low = use "clr_clr_and_cld_cld" approach only for lower tropospheric sensitive channels 
                                              !                           use "default" for the other all-sky channels
+                                             ! cld_diff_constraint =  do not separate the data into clear/cloudy group
+                                             ! use the data where the cloud amount difference (cld_diff_varbc_constraint) is small
+                                             ! cld_diff_varbc_constraint is defined in the cloud table (cloudy_radiance_info*.txt)
+
    io_use_bc_clw_for_cloud_mismatch = .true. ! whether using bias corrected TB to define the model CLW for VarBC data control
                                              ! when usig cloud predictors (io_cld_pred_in_varbc = .true.) recommend turning this to .false.
    cld_cld_varbc_constraint = 0.05_r_kind    ! definition for "cloudy-consistent" data for varbc (see varbc_data_control)
@@ -405,6 +412,10 @@ contains
 
    ! empirical inflation:
    io_empirical_inflation = .true.           ! whether to use the empirical inflation from Zhu et al. (2016)
+
+   ! non-Gaussian error:
+   io_non_Gaussian_error = .false.           ! whether to use non-Gaussian errors for selected AMSUA/ATMS channels
+                                             ! channels are defined based on "cld_varbc_chs" (all_sky or low_peaking)
 
    ! save Jacobian:
    io_save_jacobian_cch = .true.             ! whether to save inner domain and Jacobian for AMSUA/ATMS channels
